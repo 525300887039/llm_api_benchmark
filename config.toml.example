@@ -1,0 +1,134 @@
+[general]
+prompt = "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。"
+runs = 3
+output_dir = "./results"
+report_file = "benchmark_report.md"
+
+# ============================================================
+# 硅基流动 (SiliconFlow) - OpenAI 兼容格式
+# https://siliconflow.cn
+# ============================================================
+
+[[apis]]
+name = "SiliconFlow-Qwen3-8B"
+url = "https://api.siliconflow.cn/v1/chat/completions"
+key = "sk-your-siliconflow-api-key"
+model = "Qwen/Qwen3-8B"
+type = "openai"
+
+[[apis]]
+name = "SiliconFlow-DeepSeek-V3"
+url = "https://api.siliconflow.cn/v1/chat/completions"
+key = "sk-your-siliconflow-api-key"
+model = "deepseek-ai/DeepSeek-V3"
+type = "openai"
+
+# ============================================================
+# OpenAI
+# https://platform.openai.com
+# ============================================================
+
+[[apis]]
+name = "OpenAI-GPT4o-mini"
+url = "https://api.openai.com/v1/chat/completions"
+key = "sk-your-openai-api-key"
+model = "gpt-4o-mini"
+type = "openai"
+
+[[apis]]
+name = "OpenAI-GPT4o"
+url = "https://api.openai.com/v1/chat/completions"
+key = "sk-your-openai-api-key"
+model = "gpt-4o"
+type = "openai"
+
+# ============================================================
+# Anthropic Claude
+# https://console.anthropic.com
+# ============================================================
+
+[[apis]]
+name = "Claude-3.5-Sonnet"
+url = "https://api.anthropic.com/v1/messages"
+key = "sk-ant-your-anthropic-api-key"
+model = "claude-3-5-sonnet-20241022"
+type = "claude"
+
+# ============================================================
+# Azure OpenAI
+# https://portal.azure.com
+# ============================================================
+
+[[apis]]
+name = "Azure-GPT4o"
+url = "https://your-resource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-01"
+key = "your-azure-api-key"
+model = "gpt-4o"
+type = "azure"
+
+# ============================================================
+# DeepSeek 官方
+# https://platform.deepseek.com
+# ============================================================
+
+[[apis]]
+name = "DeepSeek-V3"
+url = "https://api.deepseek.com/v1/chat/completions"
+key = "sk-your-deepseek-api-key"
+model = "deepseek-chat"
+type = "openai"
+
+[[apis]]
+name = "DeepSeek-R1"
+url = "https://api.deepseek.com/v1/chat/completions"
+key = "sk-your-deepseek-api-key"
+model = "deepseek-reasoner"
+type = "openai"
+
+# ============================================================
+# 智谱 AI (Zhipu)
+# https://open.bigmodel.cn
+# ============================================================
+
+[[apis]]
+name = "Zhipu-GLM4"
+url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+key = "your-zhipu-api-key"
+model = "glm-4"
+type = "openai"
+
+# ============================================================
+# 月之暗面 (Moonshot / Kimi)
+# https://platform.moonshot.cn
+# ============================================================
+
+[[apis]]
+name = "Moonshot-v1-8k"
+url = "https://api.moonshot.cn/v1/chat/completions"
+key = "sk-your-moonshot-api-key"
+model = "moonshot-v1-8k"
+type = "openai"
+
+# ============================================================
+# 百度千帆 (Baidu ERNIE)
+# https://qianfan.baidubce.com (OpenAI 兼容接口)
+# ============================================================
+
+[[apis]]
+name = "ERNIE-4.0"
+url = "https://qianfan.baidubce.com/v2/chat/completions"
+key = "your-baidu-api-key"
+model = "ernie-4.0-8k"
+type = "openai"
+
+# ============================================================
+# 阿里通义千问 (Alibaba DashScope)
+# https://dashscope.aliyun.com (OpenAI 兼容接口)
+# ============================================================
+
+[[apis]]
+name = "Qwen-Max"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+key = "sk-your-dashscope-api-key"
+model = "qwen-max"
+type = "openai"

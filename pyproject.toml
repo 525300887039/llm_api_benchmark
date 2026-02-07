@@ -5,13 +5,14 @@ description = "测试各种大语言模型API性能的工具"
 authors = [
     {name = "Your Name", email = "your.email@example.com"},
 ]
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
 
 dependencies = [
     "requests>=2.28.0",
     "tomli>=2.0.0",
+    "streamlit>=1.24.0",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +32,7 @@ build-backend = "hatchling.build"
 
 [tool.black]
 line-length = 100
-target-version = ["py37", "py38", "py39", "py310", "py311"]
+target-version = ["py310", "py311", "py312"]
 
 [tool.isort]
 profile = "black"
@@ -40,3 +41,4 @@ line_length = 100
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+pythonpath = ["src"]

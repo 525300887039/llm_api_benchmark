@@ -45,6 +45,7 @@ coverage.xml
 # Local API keys
 .env
 *.key
+config.toml
 
 results.json
 output/
