@@ -73,17 +73,17 @@ def _build_overview_df(results: list):
 
     rows = []
     for r in results:
-        rows.append({
-            "Name": r.get("name", r.get("model", "unknown")),
-            "Model": r.get("model", ""),
-            "API Type": r.get("api_type", "openai"),
-            "First Token Latency (s)": round(r.get("first_token_latency", 0), 3),
-            "P90 Latency (s)": round(
-                r.get("first_token_latency_stats", {}).get("p90", 0), 3
-            ),
-            "Throughput (tokens/s)": round(r.get("token_throughput", 0), 2),
-            "Total Time (s)": round(r.get("total_time", 0), 2),
-        })
+        rows.append(
+            {
+                "Name": r.get("name", r.get("model", "unknown")),
+                "Model": r.get("model", ""),
+                "API Type": r.get("api_type", "openai"),
+                "First Token Latency (s)": round(r.get("first_token_latency", 0), 3),
+                "P90 Latency (s)": round(r.get("first_token_latency_stats", {}).get("p90", 0), 3),
+                "Throughput (tokens/s)": round(r.get("token_throughput", 0), 2),
+                "Total Time (s)": round(r.get("total_time", 0), 2),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -140,16 +140,21 @@ def _render_per_model_stats(st_module, results: list):
     for r in results:
         name = r.get("name", r.get("model", "unknown"))
         with st_module.expander(f"{name}", expanded=False):
-            st_module.markdown(f"**Model:** {r.get('model', '')}  |  "
-                               f"**API Type:** {r.get('api_type', 'openai')}  |  "
-                               f"**API URL:** `{r.get('api_url', '')}`")
+            st_module.markdown(
+                f"**Model:** {r.get('model', '')}  |  "
+                f"**API Type:** {r.get('api_type', 'openai')}  |  "
+                f"**API URL:** `{r.get('api_url', '')}`"
+            )
 
-            _render_stats_table(st_module, pd, "First Token Latency (s)",
-                                r.get("first_token_latency_stats", {}))
-            _render_stats_table(st_module, pd, "Token Throughput (tokens/s)",
-                                r.get("token_throughput_stats", {}))
-            _render_stats_table(st_module, pd, "Total Response Time (s)",
-                                r.get("total_time_stats", {}))
+            _render_stats_table(
+                st_module, pd, "First Token Latency (s)", r.get("first_token_latency_stats", {})
+            )
+            _render_stats_table(
+                st_module, pd, "Token Throughput (tokens/s)", r.get("token_throughput_stats", {})
+            )
+            _render_stats_table(
+                st_module, pd, "Total Response Time (s)", r.get("total_time_stats", {})
+            )
 
 
 def _render_stats_table(st_module, pd_module, title: str, stats: dict):
@@ -172,7 +177,7 @@ def _render_stats_table(st_module, pd_module, title: str, stats: dict):
 
 # ---- Streamlit 入口点 ----
 # 当通过 `streamlit run visualize.py -- --results_dir ./results` 执行时
-if __name__ == "__main__" or "streamlit" in globals().get("__loader__", "").__class__.__name__.lower() if hasattr(globals().get("__loader__", ""), "__class__") else False:
+if __name__ == "__main__":
     import argparse as _ap
 
     _parser = _ap.ArgumentParser()

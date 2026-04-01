@@ -1,25 +1,29 @@
-# 大语言模型API基准测试工具
+# 大语言模型 API 基准测试工具
 
-这是一个用于测试各种大语言模型API性能的Python工具。目前支持OpenAI兼容格式的API接口，可以测量以下指标：
+这是一个用于测试各种大语言模型 API 性能的 Python 工具，支持单模型测试、批量对比和 Streamlit 可视化报告。
 
-- **首字延迟**：从发送请求到收到第一个token的时间
-- **Token吞吐量**：每秒产生的token数量
+当前可测量的指标包括：
+
+- **首字延迟**：从发送请求到收到第一个 token 的时间
+- **Token 吞吐量**：每秒生成的 token 数量
+- **总响应时间**：非流式请求的完整响应耗时
+- **详细统计字段**：`avg`、`min`、`max`、`median`、`p90`、`p99`、`std_dev`、`raw`
 
 ## 安装
 
 ### 使用 pip 安装
 
 ```bash
-# 从GitHub安装
+# 从 GitHub 安装
 git clone https://github.com/yourusername/llm_api_benchmark.git
 cd llm_api_benchmark
 pip install -e .
 
-# 或直接从PyPI安装（未上传）
+# 或直接从 PyPI 安装（未上传）
 # pip install llm-api-benchmark
 ```
 
-### 使用 uv 安装 (推荐)
+### 使用 uv 安装（推荐）
 
 [uv](https://github.com/astral-sh/uv) 是一个更快的 Python 包管理器和解析器。
 
@@ -27,21 +31,39 @@ pip install -e .
 # 首先创建并激活虚拟环境
 uv venv
 source .venv/bin/activate  # Linux/macOS
-# 或者在Windows上
+# 或者在 Windows 上
 # .venv\Scripts\activate
 
-# 从GitHub安装
+# 从 GitHub 安装
 git clone https://github.com/yourusername/llm_api_benchmark.git
 cd llm_api_benchmark
 uv pip install -e .
 
-# 或直接从PyPI安装（未上传）
+# 或直接从 PyPI 安装（未上传）
 # uv pip install llm-api-benchmark
 ```
 
+## 支持的 API 格式
+
+本工具已原生支持三种 API 格式：
+
+- **OpenAI 兼容格式**：包括 OpenAI，以及 SiliconFlow、DeepSeek、智谱 AI、月之暗面（Moonshot / Kimi）等提供 OpenAI 兼容接口的平台
+- **Anthropic Claude 原生格式**：使用 Anthropic `messages` API
+- **Azure OpenAI 格式**：使用 Azure OpenAI 的请求头和请求体格式
+
+单次测试通过 `--api_type` 选择接口格式；批量测试通过配置文件中的 `type` 字段指定。
+
 ## 使用方法
 
-### 测试单个API
+### 命令概览
+
+```bash
+llm-api-benchmark single --api_key YOUR_API_KEY
+llm-api-benchmark batch --config config.toml
+llm-api-benchmark report --results_dir ./results
+```
+
+### 测试单个 API
 
 ```bash
 # 使用安装后的命令行工具
@@ -51,123 +73,200 @@ llm-api-benchmark single --api_key YOUR_API_KEY
 python -m llm_api_benchmark single --api_key YOUR_API_KEY
 ```
 
-完整参数：
+完整示例：
 
 ```bash
 llm-api-benchmark single \
   --api_url "https://api.openai.com/v1/chat/completions" \
   --api_key "YOUR_API_KEY" \
-  --model "gpt-3.5-turbo" \
+  --model "gpt-4o-mini" \
+  --api_type openai \
   --prompt "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。" \
   --runs 3 \
   --output "results.json"
 ```
 
-### 批量测试多个API
+如果测试其他接口格式，只需要切换 `--api_type` 和对应的 `--api_url`：
 
-批量测试允许您通过TOML配置文件同时测试多个LLM API，并自动生成对比报告。
+```bash
+# Anthropic Claude 原生格式
+llm-api-benchmark single \
+  --api_url "https://api.anthropic.com/v1/messages" \
+  --api_key "YOUR_ANTHROPIC_API_KEY" \
+  --model "claude-3-5-sonnet-20241022" \
+  --api_type claude
 
-1. 首先创建一个配置文件，例如 `config.toml`:
-
-```toml
-# LLM API 批量测试配置文件
-
-[general]
-# 通用测试参数
-prompt = "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。"
-runs = 3  # 每个测试运行次数
-output_dir = "./results"  # 结果输出目录
-report_file = "benchmark_report.md"  # 最终报告文件名
-
-# 定义多个API配置
-[[apis]]
-name = "OpenAI GPT-3.5"
-url = "https://api.openai.com/v1/chat/completions"
-key = "YOUR_OPENAI_API_KEY"  # 替换为实际的API密钥
-model = "gpt-3.5-turbo"
-
-[[apis]]
-name = "OpenAI GPT-4"
-url = "https://api.openai.com/v1/chat/completions"
-key = "YOUR_OPENAI_API_KEY"  # 替换为实际的API密钥
-model = "gpt-4"
+# Azure OpenAI
+llm-api-benchmark single \
+  --api_url "https://your-resource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-01" \
+  --api_key "YOUR_AZURE_API_KEY" \
+  --model "gpt-4o" \
+  --api_type azure
 ```
 
-2. 运行批量测试:
+### 批量测试多个 API
+
+批量测试允许通过 TOML 配置文件同时测试多个 LLM API，并自动生成 Markdown 对比报告。仓库内提供了示例配置文件 `config.toml.example`。
+
+可以复制一份并按需修改：
+
+```toml
+[general]
+prompt = "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。"
+runs = 3
+output_dir = "./results"
+report_file = "benchmark_report.md"
+
+[[apis]]
+name = "OpenAI-GPT4o-mini"
+url = "https://api.openai.com/v1/chat/completions"
+key = "sk-your-openai-api-key"
+model = "gpt-4o-mini"
+type = "openai"
+
+[[apis]]
+name = "Claude-3.5-Sonnet"
+url = "https://api.anthropic.com/v1/messages"
+key = "sk-ant-your-anthropic-api-key"
+model = "claude-3-5-sonnet-20241022"
+type = "claude"
+
+[[apis]]
+name = "Azure-GPT4o"
+url = "https://your-resource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-01"
+key = "your-azure-api-key"
+model = "gpt-4o"
+type = "azure"
+```
+
+运行批量测试：
 
 ```bash
 llm-api-benchmark batch --config config.toml
 ```
 
-这将测试配置中指定的所有API，并在results目录下生成一个Markdown格式的对比报告。
+运行后会在 `results` 目录中生成每个模型的 JSON 结果文件，以及一个 Markdown 对比报告。
 
-### 参数说明
+### 启动可视化报告
 
-单个API测试参数:
-- `--api_url`: API端点URL (默认为OpenAI的聊天补全API)
-- `--api_key`: API密钥（必需）
-- `--model`: 要测试的模型名称（默认为"gpt-3.5-turbo"）
-- `--prompt`: 测试用的提示词
-- `--runs`: 每项测试运行的次数（默认为3）
-- `--output`: 结果输出的JSON文件路径（可选）
+批量测试完成后，可以启动 Streamlit 可视化报告：
 
-批量测试参数:
-- `--config`: TOML配置文件路径（必需）
+```bash
+llm-api-benchmark report --results_dir ./results
+```
 
-## 测试其他兼容OpenAI格式的API
+如需自定义端口：
 
-本工具支持测试任何兼容OpenAI格式的API，包括但不限于：
+```bash
+llm-api-benchmark report --results_dir ./results --port 8501
+```
 
-- OpenAI API
-- Azure OpenAI
-- Claude API (使用OpenAI兼容模式)
-- 本地部署的LLM (例如通过LM Studio或其他提供OpenAI兼容接口的服务)
+## 参数说明
 
-只需要修改`--api_url`参数或在配置文件中指定相应的API端点即可。
+### `single` 子命令参数
+
+- `--api_url`：API 端点 URL，默认值为 `https://api.openai.com/v1/chat/completions`
+- `--api_key`：API 密钥，必需
+- `--model`：要测试的模型名称，默认值为 `gpt-3.5-turbo`
+- `--prompt`：测试提示词
+- `--runs`：每项测试运行次数，默认值为 `3`
+- `--output`：结果输出的 JSON 文件路径，可选
+- `--api_type`：API 类型，`choices: openai, claude, azure`，默认值为 `openai`
+
+### `batch` 子命令参数
+
+- `--config`：TOML 配置文件路径，必需
+
+### `report` 子命令参数
+
+- `--results_dir`：测试结果目录，默认值为 `./results`
+- `--port`：Streamlit 服务端口，默认值为 `8501`
 
 ## 输出示例
 
-### 单个API测试JSON输出
+### 单个 API 测试 JSON 输出
+
+单次综合测试返回的 JSON 顶层会保留平均值字段，同时包含完整的 `_stats` 详细统计信息：
 
 ```json
 {
-  "model": "gpt-3.5-turbo",
+  "model": "gpt-4o-mini",
   "api_url": "https://api.openai.com/v1/chat/completions",
-  "timestamp": "2023-11-15T14:32:45.123456",
-  "prompt_length": 60,
+  "api_type": "openai",
+  "timestamp": "2026-04-01T12:34:56.123456",
+  "prompt_length": 29,
   "runs": 3,
   "first_token_latency": 0.512,
-  "token_throughput": 42.15
+  "token_throughput": 42.15,
+  "total_time": 2.84,
+  "first_token_latency_stats": {
+    "avg": 0.512,
+    "min": 0.481,
+    "max": 0.556,
+    "median": 0.499,
+    "p90": 0.545,
+    "p99": 0.555,
+    "std_dev": 0.039,
+    "raw": [0.481, 0.499, 0.556]
+  },
+  "token_throughput_stats": {
+    "avg": 42.15,
+    "min": 39.87,
+    "max": 44.62,
+    "median": 41.96,
+    "p90": 44.09,
+    "p99": 44.57,
+    "std_dev": 2.38,
+    "raw": [39.87, 41.96, 44.62]
+  },
+  "total_time_stats": {
+    "avg": 2.84,
+    "min": 2.61,
+    "max": 3.05,
+    "median": 2.87,
+    "p90": 3.01,
+    "p99": 3.05,
+    "std_dev": 0.22,
+    "raw": [2.61, 2.87, 3.05]
+  }
 }
 ```
 
-### 批量测试报告示例
+### 批量测试报告
 
-批量测试会生成一个Markdown格式的对比报告，包含所有测试结果的对比表格和详细数据。
+批量测试会生成：
+
+- 每个模型一个 JSON 结果文件
+- 一个 Markdown 格式的对比报告
+- 可通过 `report` 子命令打开的 Streamlit 可视化界面
 
 ## 开发
 
-### 项目结构
+### 主要文件结构
 
-```
+```text
 llm_api_benchmark/
-│
-├── src/                          # 源代码
-│   └── llm_api_benchmark/        # 主包
+├── src/
+│   └── llm_api_benchmark/
 │       ├── __init__.py           # 包初始化
-│       ├── __main__.py           # 入口点
-│       ├── benchmark.py          # 核心基准测试功能
-│       ├── batch.py              # 批量测试功能
+│       ├── __main__.py           # 模块入口，兼容旧版命令行
+│       ├── benchmark.py          # 核心基准测试逻辑
+│       ├── batch.py              # 批量测试与 Markdown 报告生成
+│       ├── providers.py          # API Provider 适配器
+│       ├── visualize.py          # Streamlit 可视化报告
 │       └── cli.py                # 命令行接口
-│
-├── tests/                        # 测试目录
+├── tests/
 │   ├── __init__.py
-│   └── test_benchmark.py         # 单元测试
-│
-├── config.toml                   # 批量测试配置示例
+│   ├── test_benchmark.py         # Benchmark 测试
+│   ├── test_cli.py               # CLI 测试
+│   ├── test_providers.py         # Provider 测试
+│   └── test_visualize.py         # 可视化测试
+├── config.toml.example           # 批量测试配置示例
+├── run_benchmark.py              # 运行辅助脚本
+├── llm_api_benchmark_legacy.py   # 旧版兼容脚本
 ├── pyproject.toml                # 项目配置和依赖
 ├── README.md                     # 说明文档
-├── .gitignore                    # Git忽略文件
+├── .gitignore                    # Git 忽略文件
 └── requirements.txt              # 依赖列表（兼容旧版本）
 ```
 
@@ -179,7 +278,7 @@ llm_api_benchmark/
 # 创建并激活虚拟环境
 uv venv
 source .venv/bin/activate  # Linux/macOS
-# 或者在Windows上
+# 或者在 Windows 上
 # .venv\Scripts\activate
 
 # 安装开发依赖
@@ -195,7 +294,10 @@ python -m isort src tests
 
 ## 后续开发计划
 
-- 添加更多性能指标测量
-- 支持更多API接口格式
-- 添加批量测试和对比功能
-- 添加可视化报告生成
+- ~~添加更多性能指标测量~~
+- ~~支持更多 API 接口格式~~
+- ~~添加批量测试和对比功能~~
+- ~~添加可视化报告生成~~
+- 支持 Google Gemini API
+- 流式吞吐量测量
+- 请求重试和超时机制

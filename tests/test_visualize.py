@@ -25,16 +25,22 @@ class TestLoadResults(unittest.TestCase):
         """测试加载有效的 JSON 结果文件."""
         from llm_api_benchmark.visualize import load_results
 
-        self._write_json("model_a.json", {
-            "model": "model-a",
-            "first_token_latency": 0.5,
-            "token_throughput": 50.0,
-        })
-        self._write_json("model_b.json", {
-            "model": "model-b",
-            "first_token_latency": 0.3,
-            "token_throughput": 80.0,
-        })
+        self._write_json(
+            "model_a.json",
+            {
+                "model": "model-a",
+                "first_token_latency": 0.5,
+                "token_throughput": 50.0,
+            },
+        )
+        self._write_json(
+            "model_b.json",
+            {
+                "model": "model-b",
+                "first_token_latency": 0.3,
+                "token_throughput": 80.0,
+            },
+        )
 
         results = load_results(self.results_dir)
         self.assertEqual(len(results), 2)
@@ -129,5 +135,5 @@ class TestBuildOverviewDf(unittest.TestCase):
         self.assertEqual(df.iloc[0]["Throughput (tokens/s)"], 0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

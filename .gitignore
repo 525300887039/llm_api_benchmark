@@ -51,6 +51,10 @@ results.json
 output/
 benchmark_results/
 
+# Plans and prompts (local development notes)
+plans/
+prompts/
+
 # 项目特定文件
 results/
 *.log
