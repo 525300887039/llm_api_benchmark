@@ -1,12 +1,13 @@
 """批量测试模块，用于批量测试多个LLM API并生成对比报告."""
 
-import os
 import json
-import tomli
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Any
+
+import tomli
 
 from .benchmark import LLMAPIBenchmark
 
@@ -42,6 +43,81 @@ class BatchBenchmark:
         except Exception as e:
             raise ValueError(f"加载配置文件失败: {e}")
 
+    def _run_single_api_test(
+        self,
+        api_config: Dict[str, Any],
+        index: int,
+        prompt: str,
+        runs: int,
+        output_dir: str,
+        timeout: Any,
+    ) -> Dict[str, Any] | None:
+        """执行单个 API 的基准测试，返回结果 dict 或 None（失败时）."""
+        name = api_config.get("name", f"API_{index+1}")
+        url = api_config.get("url")
+        key = api_config.get("key")
+        model = api_config.get("model")
+        api_type = api_config.get("type", "openai")
+        parallel_output = getattr(self, "_parallel_output", False)
+
+        if not url or not model:
+            if parallel_output:
+                print(f"[{name}] 警告: API '{name}' 配置不完整，已跳过")
+            else:
+                print(f"警告: API '{name}' 配置不完整，已跳过")
+            return None
+
+        if parallel_output:
+            print(f"\n\n[{name}] {'=' * 80}")
+            print(f"[{name}] 正在测试 API: {name}")
+            print(f"[{name}] {'=' * 80}\n")
+        else:
+            print(f"\n\n{'=' * 80}")
+            print(f"正在测试 API: {name}")
+            print(f"{'=' * 80}\n")
+
+        general_config = self.config.get("general", {})
+        warmup_runs = general_config.get("warmup_runs", 0)
+        max_retries = general_config.get("max_retries", 0)
+        retry_delay = general_config.get("retry_delay", 1.0)
+
+        try:
+            benchmark = LLMAPIBenchmark(
+                url,
+                key,
+                model,
+                api_type,
+                timeout=timeout,
+                warmup_runs=warmup_runs,
+                max_retries=max_retries,
+                retry_delay=retry_delay,
+            )
+            result = benchmark.run_comprehensive_benchmark(prompt, runs)
+
+            # 添加API名称和测试时间
+            result["name"] = name
+            result["test_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # 保存结果到文件
+            result_file = os.path.join(
+                output_dir, f"{name.replace(' ', '_').lower()}_{int(time.time())}.json"
+            )
+            with open(result_file, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+
+            if parallel_output:
+                print(f"\n[{name}] 结果已保存到: {result_file}")
+            else:
+                print(f"\n结果已保存到: {result_file}")
+
+            return result
+        except Exception as e:
+            if parallel_output:
+                print(f"[{name}] 测试 API '{name}' 时发生错误: {e}")
+            else:
+                print(f"测试 API '{name}' 时发生错误: {e}")
+            return None
+
     def run_batch_tests(self) -> List[Dict[str, Any]]:
         """
         运行批量测试.
@@ -57,9 +133,7 @@ class BatchBenchmark:
         runs = general_config.get("runs", 3)
         output_dir = general_config.get("output_dir", "./results")
         timeout = general_config.get("timeout")
-        warmup_runs = general_config.get("warmup_runs", 0)
-        max_retries = general_config.get("max_retries", 0)
-        retry_delay = general_config.get("retry_delay", 1.0)
+        parallel = general_config.get("parallel", 1)
 
         # 获取API配置列表
         apis = self.config.get("apis", [])
@@ -68,50 +142,37 @@ class BatchBenchmark:
 
         # 运行测试
         results = []
-        for i, api_config in enumerate(apis):
-            name = api_config.get("name", f"API_{i+1}")
-            url = api_config.get("url")
-            key = api_config.get("key")
-            model = api_config.get("model")
-            api_type = api_config.get("type", "openai")
+        self._parallel_output = False
 
-            if not url or not model:
-                print(f"警告: API '{name}' 配置不完整，已跳过")
-                continue
+        if parallel == 1:
+            for i, api_config in enumerate(apis):
+                result = self._run_single_api_test(api_config, i, prompt, runs, output_dir, timeout)
+                if result is not None:
+                    results.append(result)
+        else:
+            if parallel == 0:
+                max_workers = len(apis)
+            elif parallel > 1:
+                max_workers = parallel
+            else:
+                raise ValueError("general.parallel 必须大于等于 0")
 
-            print(f"\n\n{'='*80}")
-            print(f"正在测试 API: {name}")
-            print(f"{'='*80}\n")
-
-            try:
-                benchmark = LLMAPIBenchmark(
-                    url,
-                    key,
-                    model,
-                    api_type,
-                    timeout=timeout,
-                    warmup_runs=warmup_runs,
-                    max_retries=max_retries,
-                    retry_delay=retry_delay,
-                )
-                result = benchmark.run_comprehensive_benchmark(prompt, runs)
-
-                # 添加API名称和测试时间
-                result["name"] = name
-                result["test_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                # 保存结果到文件
-                result_file = os.path.join(
-                    output_dir, f"{name.replace(' ', '_').lower()}_{int(time.time())}.json"
-                )
-                with open(result_file, "w", encoding="utf-8") as f:
-                    json.dump(result, f, ensure_ascii=False, indent=2)
-
-                print(f"\n结果已保存到: {result_file}")
-                results.append(result)
-
-            except Exception as e:
-                print(f"测试 API '{name}' 时发生错误: {e}")
+            self._parallel_output = True
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        self._run_single_api_test, api_config, i, prompt, runs, output_dir, timeout
+                    ): api_config.get("name", f"API_{i+1}")
+                    for i, api_config in enumerate(apis)
+                }
+                for future in as_completed(futures):
+                    name = futures[future]
+                    try:
+                        result = future.result()
+                        if result is not None:
+                            results.append(result)
+                    except Exception as e:
+                        print(f"测试 API '{name}' 时发生未预期的错误: {e}")
 
         self.results = results
         return results

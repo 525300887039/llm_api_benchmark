@@ -4,6 +4,8 @@ runs = 3
 # warmup_runs = 1
 # max_retries = 2
 # retry_delay = 1.0
+# 并行测试线程数；1 表示串行执行（默认），0 表示自动（= API 数量）
+# parallel = 1
 output_dir = "./results"
 report_file = "benchmark_report.md"
 # 可选：不配置时使用 requests 默认行为；也可写成单个数字或 [connect_timeout, read_timeout]
