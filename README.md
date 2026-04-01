@@ -45,11 +45,12 @@ uv pip install -e .
 
 ## 支持的 API 格式
 
-本工具已原生支持三种 API 格式：
+本工具已原生支持四种 API 格式：
 
 - **OpenAI 兼容格式**：包括 OpenAI，以及 SiliconFlow、DeepSeek、智谱 AI、月之暗面（Moonshot / Kimi）等提供 OpenAI 兼容接口的平台
 - **Anthropic Claude 原生格式**：使用 Anthropic `messages` API
 - **Azure OpenAI 格式**：使用 Azure OpenAI 的请求头和请求体格式
+- **Google Gemini 原生格式**：使用 Gemini `generateContent` / `streamGenerateContent` 接口
 
 单次测试通过 `--api_type` 选择接口格式；批量测试通过配置文件中的 `type` 字段指定。
 
@@ -102,6 +103,13 @@ llm-api-benchmark single \
   --api_key "YOUR_AZURE_API_KEY" \
   --model "gpt-4o" \
   --api_type azure
+
+# Google Gemini
+llm-api-benchmark single \
+  --api_url "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" \
+  --api_key "YOUR_GEMINI_API_KEY" \
+  --model "gemini-2.5-flash" \
+  --api_type gemini
 ```
 
 ### 批量测试多个 API
@@ -114,8 +122,13 @@ llm-api-benchmark single \
 [general]
 prompt = "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。"
 runs = 3
+# warmup_runs = 1
+# max_retries = 2
+# retry_delay = 1.0
+# parallel = 1
 output_dir = "./results"
 report_file = "benchmark_report.md"
+# timeout = 120
 
 [[apis]]
 name = "OpenAI-GPT4o-mini"
@@ -137,6 +150,13 @@ url = "https://your-resource.openai.azure.com/openai/deployments/gpt-4o/chat/com
 key = "your-azure-api-key"
 model = "gpt-4o"
 type = "azure"
+
+[[apis]]
+name = "Gemini-2.5-Flash"
+url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+key = "your-gemini-api-key"
+model = "gemini-2.5-flash"
+type = "gemini"
 ```
 
 运行批量测试：
@@ -170,8 +190,12 @@ llm-api-benchmark report --results_dir ./results --port 8501
 - `--model`：要测试的模型名称，默认值为 `gpt-3.5-turbo`
 - `--prompt`：测试提示词
 - `--runs`：每项测试运行次数，默认值为 `3`
+- `--warmup_runs`：正式测量前的预热次数，默认值为 `0`
+- `--max_retries`：单轮请求失败后的最大重试次数，默认值为 `0`
+- `--retry_delay`：初始重试等待秒数，默认值为 `1.0`，后续按指数退避
 - `--output`：结果输出的 JSON 文件路径，可选
-- `--api_type`：API 类型，`choices: openai, claude, azure`，默认值为 `openai`
+- `--timeout`：请求超时秒数，默认不设置
+- `--api_type`：API 类型，`choices: openai, claude, azure, gemini`，默认值为 `openai`
 
 ### `batch` 子命令参数
 
@@ -196,8 +220,11 @@ llm-api-benchmark report --results_dir ./results --port 8501
   "timestamp": "2026-04-01T12:34:56.123456",
   "prompt_length": 29,
   "runs": 3,
+  "warmup_runs": 1,
+  "max_retries": 2,
   "first_token_latency": 0.512,
   "token_throughput": 42.15,
+  "streaming_throughput": 186.42,
   "total_time": 2.84,
   "first_token_latency_stats": {
     "avg": 0.512,
@@ -218,6 +245,16 @@ llm-api-benchmark report --results_dir ./results --port 8501
     "p99": 44.57,
     "std_dev": 2.38,
     "raw": [39.87, 41.96, 44.62]
+  },
+  "streaming_throughput_stats": {
+    "avg": 186.42,
+    "min": 180.12,
+    "max": 193.55,
+    "median": 185.59,
+    "p90": 191.96,
+    "p99": 193.39,
+    "std_dev": 6.78,
+    "raw": [180.12, 185.59, 193.55]
   },
   "total_time_stats": {
     "avg": 2.84,
@@ -298,6 +335,11 @@ python -m isort src tests
 - ~~支持更多 API 接口格式~~
 - ~~添加批量测试和对比功能~~
 - ~~添加可视化报告生成~~
-- 支持 Google Gemini API
-- 流式吞吐量测量
-- 请求重试和超时机制
+- ~~支持 Google Gemini API~~
+- ~~流式吞吐量测量~~
+- ~~请求重试和超时机制~~
+- ~~预热轮次~~
+- ~~批量测试并行化~~
+- 支持自定义请求头和请求体参数
+- 支持从环境变量读取 API Key
+- HTML 格式报告导出

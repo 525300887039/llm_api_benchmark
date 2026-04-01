@@ -12,6 +12,11 @@ import tomli
 from .benchmark import LLMAPIBenchmark
 
 
+DEFAULT_PROMPT = "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。"
+DEFAULT_OUTPUT_DIR = "./results"
+DEFAULT_REPORT_FILE = "benchmark_report.md"
+
+
 class BatchBenchmark:
     """批量测试多个LLM API并生成对比报告."""
 
@@ -24,11 +29,21 @@ class BatchBenchmark:
         """
         self.config_file = config_file
         self.config = self._load_config()
+        self.general_config = self.config.get("general", {})
+        self.prompt = self.general_config.get("prompt", DEFAULT_PROMPT)
+        self.runs = self.general_config.get("runs", 3)
+        self.output_dir = self.general_config.get("output_dir", DEFAULT_OUTPUT_DIR)
+        self.report_file = self.general_config.get("report_file", DEFAULT_REPORT_FILE)
+        self.timeout = self.general_config.get("timeout")
+        self.parallel = self.general_config.get("parallel", 1)
+        self.warmup_runs = self.general_config.get("warmup_runs", 0)
+        self.max_retries = self.general_config.get("max_retries", 0)
+        self.retry_delay = self.general_config.get("retry_delay", 1.0)
+        self.apis = self.config.get("apis", [])
         self.results = []
 
         # 创建输出目录
-        output_dir = self.config.get("general", {}).get("output_dir", "./results")
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
 
     def _load_config(self) -> Dict[str, Any]:
         """
@@ -53,6 +68,9 @@ class BatchBenchmark:
         timeout: Any,
     ) -> Dict[str, Any] | None:
         """执行单个 API 的基准测试，返回结果 dict 或 None（失败时）."""
+        prompt = prompt or self.prompt
+        runs = runs or self.runs
+        timeout = self.timeout if timeout is None else timeout
         name = api_config.get("name", f"API_{index+1}")
         url = api_config.get("url")
         key = api_config.get("key")
@@ -76,11 +94,6 @@ class BatchBenchmark:
             print(f"正在测试 API: {name}")
             print(f"{'=' * 80}\n")
 
-        general_config = self.config.get("general", {})
-        warmup_runs = general_config.get("warmup_runs", 0)
-        max_retries = general_config.get("max_retries", 0)
-        retry_delay = general_config.get("retry_delay", 1.0)
-
         try:
             benchmark = LLMAPIBenchmark(
                 url,
@@ -88,9 +101,9 @@ class BatchBenchmark:
                 model,
                 api_type,
                 timeout=timeout,
-                warmup_runs=warmup_runs,
-                max_retries=max_retries,
-                retry_delay=retry_delay,
+                warmup_runs=self.warmup_runs,
+                max_retries=self.max_retries,
+                retry_delay=self.retry_delay,
             )
             result = benchmark.run_comprehensive_benchmark(prompt, runs)
 
@@ -100,7 +113,7 @@ class BatchBenchmark:
 
             # 保存结果到文件
             result_file = os.path.join(
-                output_dir, f"{name.replace(' ', '_').lower()}_{int(time.time())}.json"
+                self.output_dir, f"{name.replace(' ', '_').lower()}_{int(time.time())}.json"
             )
             with open(result_file, "w", encoding="utf-8") as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
@@ -125,35 +138,25 @@ class BatchBenchmark:
         Returns:
             List[Dict]: 所有API的测试结果
         """
-        # 获取通用参数
-        general_config = self.config.get("general", {})
-        prompt = general_config.get(
-            "prompt", "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。"
-        )
-        runs = general_config.get("runs", 3)
-        output_dir = general_config.get("output_dir", "./results")
-        timeout = general_config.get("timeout")
-        parallel = general_config.get("parallel", 1)
-
-        # 获取API配置列表
-        apis = self.config.get("apis", [])
-        if not apis:
+        if not self.apis:
             raise ValueError("配置文件中未找到API配置")
 
         # 运行测试
         results = []
         self._parallel_output = False
 
-        if parallel == 1:
-            for i, api_config in enumerate(apis):
-                result = self._run_single_api_test(api_config, i, prompt, runs, output_dir, timeout)
+        if self.parallel == 1:
+            for i, api_config in enumerate(self.apis):
+                result = self._run_single_api_test(
+                    api_config, i, self.prompt, self.runs, self.output_dir, self.timeout
+                )
                 if result is not None:
                     results.append(result)
         else:
-            if parallel == 0:
-                max_workers = len(apis)
-            elif parallel > 1:
-                max_workers = parallel
+            if self.parallel == 0:
+                max_workers = len(self.apis)
+            elif self.parallel > 1:
+                max_workers = self.parallel
             else:
                 raise ValueError("general.parallel 必须大于等于 0")
 
@@ -161,9 +164,15 @@ class BatchBenchmark:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(
-                        self._run_single_api_test, api_config, i, prompt, runs, output_dir, timeout
+                        self._run_single_api_test,
+                        api_config,
+                        i,
+                        self.prompt,
+                        self.runs,
+                        self.output_dir,
+                        self.timeout,
                     ): api_config.get("name", f"API_{i+1}")
-                    for i, api_config in enumerate(apis)
+                    for i, api_config in enumerate(self.apis)
                 }
                 for future in as_completed(futures):
                     name = futures[future]
@@ -187,18 +196,15 @@ class BatchBenchmark:
         if not self.results:
             raise ValueError("没有可用的测试结果")
 
-        general_config = self.config.get("general", {})
-        output_dir = general_config.get("output_dir", "./results")
-        report_file = general_config.get("report_file", "benchmark_report.md")
-        report_path = os.path.join(output_dir, report_file)
+        report_path = os.path.join(self.output_dir, self.report_file)
 
         # 创建报告内容
         lines = []
         lines.append("# LLM API 基准测试对比报告")
         lines.append("")
         lines.append(f"- **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append(f"- **测试提示词**: {general_config.get('prompt', '未指定')[:100]}...")
-        lines.append(f"- **每项测试运行次数**: {general_config.get('runs', 3)}")
+        lines.append(f"- **测试提示词**: {self.prompt[:100]}...")
+        lines.append(f"- **每项测试运行次数**: {self.runs}")
         lines.append("")
 
         # 创建性能对比表格
@@ -323,10 +329,8 @@ def run_batch_benchmark(config_file: str) -> str:
     batch.run_batch_tests()
     report_path = batch.generate_markdown_report()
 
-    general_config = batch.config.get("general", {})
-    output_dir = general_config.get("output_dir", "./results")
     print(
-        f"\n提示: 运行 'llm-api-benchmark report --results_dir {output_dir}' "
+        f"\n提示: 运行 'llm-api-benchmark report --results_dir {batch.output_dir}' "
         "可启动交互式可视化报告"
     )
 
