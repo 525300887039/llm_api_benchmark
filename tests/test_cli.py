@@ -60,6 +60,40 @@ class TestRunBenchmarkCli(unittest.TestCase):
             "openai",
             timeout=45.0,
             warmup_runs=0,
+            max_retries=0,
+            retry_delay=1.0,
+        )
+        mock_benchmark.run_comprehensive_benchmark.assert_called_once()
+
+    @patch("llm_api_benchmark.cli.LLMAPIBenchmark")
+    def test_single_command_passes_retry_args(self, mock_benchmark_cls):
+        """重试参数应从 CLI 透传到基准测试对象."""
+        mock_benchmark = mock_benchmark_cls.return_value
+        mock_benchmark.run_comprehensive_benchmark.return_value = {"ok": True}
+        argv = [
+            "prog",
+            "single",
+            "--api_key",
+            "test-key",
+            "--max_retries",
+            "2",
+            "--retry_delay",
+            "0.5",
+        ]
+
+        with patch("sys.argv", argv):
+            result = cli.run_benchmark_cli()
+
+        self.assertEqual(result, {"ok": True})
+        mock_benchmark_cls.assert_called_once_with(
+            "https://api.openai.com/v1/chat/completions",
+            "test-key",
+            "gpt-3.5-turbo",
+            "openai",
+            timeout=None,
+            warmup_runs=0,
+            max_retries=2,
+            retry_delay=0.5,
         )
         mock_benchmark.run_comprehensive_benchmark.assert_called_once()
 

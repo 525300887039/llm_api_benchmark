@@ -18,7 +18,15 @@ class LLMAPIBenchmark:
     """大语言模型API性能测试类."""
 
     def __init__(
-        self, api_url, api_key, model, api_type="openai", timeout=None, warmup_runs=0
+        self,
+        api_url,
+        api_key,
+        model,
+        api_type="openai",
+        timeout=None,
+        warmup_runs=0,
+        max_retries=0,
+        retry_delay=1.0,
     ):
         """
         初始化API基准测试对象.
@@ -30,6 +38,8 @@ class LLMAPIBenchmark:
             api_type: API类型 ("openai", "claude", "azure", "gemini")
             timeout: requests timeout 配置，None 表示使用 requests 默认行为
             warmup_runs: 正式测量前的预热次数，必须 >= 0
+            max_retries: 单轮请求失败后的最大重试次数，必须 >= 0
+            retry_delay: 初始重试等待秒数，必须 > 0
         """
         self.api_url = api_url
         self.api_key = api_key
@@ -37,6 +47,8 @@ class LLMAPIBenchmark:
         self.api_type = api_type
         self.timeout = self._normalize_timeout(timeout)
         self.warmup_runs = self._normalize_warmup_runs(warmup_runs)
+        self.max_retries = self._normalize_max_retries(max_retries)
+        self.retry_delay = self._normalize_retry_delay(retry_delay)
         self.provider = create_provider(api_type, api_url, api_key, model)
 
     @staticmethod
@@ -64,6 +76,32 @@ class LLMAPIBenchmark:
         if not isinstance(warmup_runs, int) or warmup_runs < 0:
             raise ValueError("warmup_runs 必须为大于等于 0 的整数")
         return warmup_runs
+
+    @staticmethod
+    def _normalize_max_retries(max_retries: Any) -> int:
+        """标准化 max_retries 配置."""
+        if not isinstance(max_retries, int) or max_retries < 0:
+            raise ValueError("max_retries 必须为大于等于 0 的整数")
+        return max_retries
+
+    @staticmethod
+    def _normalize_retry_delay(retry_delay: Any) -> float:
+        """标准化 retry_delay 配置."""
+        if not isinstance(retry_delay, (int, float)) or retry_delay <= 0:
+            raise ValueError("retry_delay 必须大于 0")
+        return float(retry_delay)
+
+    @staticmethod
+    def _is_retryable(exc: requests.RequestException) -> bool:
+        """判断异常是否可重试."""
+        if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+            return True
+
+        if isinstance(exc, requests.HTTPError):
+            response = exc.response
+            return response is not None and response.status_code in {429, 500, 502, 503, 504}
+
+        return False
 
     @staticmethod
     def _format_request_error(exc: requests.RequestException) -> str:
@@ -195,29 +233,43 @@ class LLMAPIBenchmark:
         self._run_warmup_requests(send_request, consume_stream_until_first_token)
 
         for i in range(num_runs):
-            response = None
             latency = None
             failed = False
-            try:
-                start_time = time.time()
-                response = send_request()
-                response.raise_for_status()
+            attempt = 0
 
-                # 读取第一个内容数据包
-                for line in response.iter_lines():
-                    if self.provider.is_first_content_event(line):
-                        first_token_time = time.time()
-                        latency = first_token_time - start_time
-                        latencies.append(latency)
-                        break
-            except requests.RequestException as exc:
-                error_message = self._format_request_error(exc)
-                failures.append(error_message)
-                print(f"运行 {i+1}/{num_runs}: 请求失败 ({error_message})，已跳过")
-                failed = True
-            finally:
-                if response is not None:
-                    response.close()
+            while True:
+                response = None
+                try:
+                    start_time = time.time()
+                    response = send_request()
+                    response.raise_for_status()
+
+                    # 读取第一个内容数据包
+                    for line in response.iter_lines():
+                        if self.provider.is_first_content_event(line):
+                            first_token_time = time.time()
+                            latency = first_token_time - start_time
+                            latencies.append(latency)
+                            break
+                    break
+                except requests.RequestException as exc:
+                    error_message = self._format_request_error(exc)
+                    if self._is_retryable(exc) and attempt < self.max_retries:
+                        attempt += 1
+                        print(
+                            f"运行 {i+1}/{num_runs}: 请求失败 ({error_message})，"
+                            f"第 {attempt}/{self.max_retries} 次重试..."
+                        )
+                        time.sleep(self.retry_delay * (2 ** (attempt - 1)))
+                        continue
+
+                    failures.append(error_message)
+                    print(f"运行 {i+1}/{num_runs}: 请求失败 ({error_message})，已跳过")
+                    failed = True
+                    break
+                finally:
+                    if response is not None:
+                        response.close()
 
             if not failed and latency is None:
                 failures.append("未检测到首个 token")
@@ -260,36 +312,50 @@ class LLMAPIBenchmark:
         self._run_warmup_requests(send_request, lambda response: response.json())
 
         for i in range(runs):
-            response = None
-            try:
-                start_time = time.time()
-                response = send_request()
-                response.raise_for_status()
-                end_time = time.time()
+            attempt = 0
 
-                elapsed = end_time - start_time
-                response_json = response.json()
+            while True:
+                response = None
+                try:
+                    start_time = time.time()
+                    response = send_request()
+                    response.raise_for_status()
+                    end_time = time.time()
 
-                output_tokens = self.provider.parse_token_count(response_json)
+                    elapsed = end_time - start_time
+                    response_json = response.json()
 
-                if elapsed > 0 and output_tokens > 0:
-                    throughput = output_tokens / elapsed
-                    throughputs.append(throughput)
-                    total_times.append(elapsed)
-                    print(
-                        f"运行 {i+1}/{runs}: 吞吐量 = {throughput:.2f} tokens/秒 "
-                        f"(生成了 {output_tokens} tokens，用时 {elapsed:.2f}秒)"
-                    )
-                else:
-                    failures.append("未能解析输出 token 数")
-                    print(f"运行 {i+1}/{runs}: 未能解析输出 token 数，跳过本轮")
-            except requests.RequestException as exc:
-                error_message = self._format_request_error(exc)
-                failures.append(error_message)
-                print(f"运行 {i+1}/{runs}: 请求失败 ({error_message})，已跳过")
-            finally:
-                if response is not None:
-                    response.close()
+                    output_tokens = self.provider.parse_token_count(response_json)
+
+                    if elapsed > 0 and output_tokens > 0:
+                        throughput = output_tokens / elapsed
+                        throughputs.append(throughput)
+                        total_times.append(elapsed)
+                        print(
+                            f"运行 {i+1}/{runs}: 吞吐量 = {throughput:.2f} tokens/秒 "
+                            f"(生成了 {output_tokens} tokens，用时 {elapsed:.2f}秒)"
+                        )
+                    else:
+                        failures.append("未能解析输出 token 数")
+                        print(f"运行 {i+1}/{runs}: 未能解析输出 token 数，跳过本轮")
+                    break
+                except requests.RequestException as exc:
+                    error_message = self._format_request_error(exc)
+                    if self._is_retryable(exc) and attempt < self.max_retries:
+                        attempt += 1
+                        print(
+                            f"运行 {i+1}/{runs}: 请求失败 ({error_message})，"
+                            f"第 {attempt}/{self.max_retries} 次重试..."
+                        )
+                        time.sleep(self.retry_delay * (2 ** (attempt - 1)))
+                        continue
+
+                    failures.append(error_message)
+                    print(f"运行 {i+1}/{runs}: 请求失败 ({error_message})，已跳过")
+                    break
+                finally:
+                    if response is not None:
+                        response.close()
 
             if i < runs - 1:
                 time.sleep(1)  # 避免请求过于频繁
@@ -336,6 +402,7 @@ class LLMAPIBenchmark:
             "prompt_length": len(prompt),
             "runs": runs,
             "warmup_runs": self.warmup_runs,
+            "max_retries": self.max_retries,
             # 向后兼容：保留顶层平均值
             "first_token_latency": latency_stats["avg"],
             "token_throughput": throughput_stats["avg"],

@@ -2,6 +2,8 @@
 prompt = "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。"
 runs = 3
 # warmup_runs = 1
+# max_retries = 2
+# retry_delay = 1.0
 output_dir = "./results"
 report_file = "benchmark_report.md"
 # 可选：不配置时使用 requests 默认行为；也可写成单个数字或 [connect_timeout, read_timeout]

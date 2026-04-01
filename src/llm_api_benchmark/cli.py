@@ -33,6 +33,13 @@ def run_benchmark_cli():
     )
     single_parser.add_argument("--runs", type=int, default=3, help="每项测试运行次数")
     single_parser.add_argument("--warmup_runs", type=int, default=0, help="正式测量前的预热次数")
+    single_parser.add_argument("--max_retries", type=int, default=0, help="单轮请求失败后的最大重试次数")
+    single_parser.add_argument(
+        "--retry_delay",
+        type=float,
+        default=1.0,
+        help="初始重试等待秒数，后续按指数退避",
+    )
     single_parser.add_argument("--output", help="结果输出的JSON文件路径")
     single_parser.add_argument("--timeout", type=float, help="请求超时秒数；默认不设置超时")
     single_parser.add_argument(
@@ -73,6 +80,8 @@ def run_benchmark_cli():
             args.api_type,
             timeout=args.timeout,
             warmup_runs=args.warmup_runs,
+            max_retries=args.max_retries,
+            retry_delay=args.retry_delay,
         )
         results = benchmark.run_comprehensive_benchmark(args.prompt, args.runs)
 

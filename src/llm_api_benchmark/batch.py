@@ -58,6 +58,8 @@ class BatchBenchmark:
         output_dir = general_config.get("output_dir", "./results")
         timeout = general_config.get("timeout")
         warmup_runs = general_config.get("warmup_runs", 0)
+        max_retries = general_config.get("max_retries", 0)
+        retry_delay = general_config.get("retry_delay", 1.0)
 
         # 获取API配置列表
         apis = self.config.get("apis", [])
@@ -89,6 +91,8 @@ class BatchBenchmark:
                     api_type,
                     timeout=timeout,
                     warmup_runs=warmup_runs,
+                    max_retries=max_retries,
+                    retry_delay=retry_delay,
                 )
                 result = benchmark.run_comprehensive_benchmark(prompt, runs)
 

@@ -1,7 +1,7 @@
 """LLM API基准测试工具的单元测试."""
 
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 from datetime import datetime
 import requests
 
@@ -40,6 +40,18 @@ class TestLLMAPIBenchmark(unittest.TestCase):
             "usage": {"completion_tokens": output_tokens},
             "choices": [{"message": {"content": "测试回复" * 20}}],
         }
+        return mock_response
+
+    @staticmethod
+    def _build_http_error_response(status_code, reason):
+        """构造 raise_for_status 会抛出 HTTPError 的响应."""
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_response.reason = reason
+        mock_response.raise_for_status.side_effect = requests.HTTPError(
+            f"{status_code} {reason}",
+            response=mock_response,
+        )
         return mock_response
 
     @patch("llm_api_benchmark.benchmark.requests.post")
@@ -150,6 +162,149 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         mock_post.assert_called_once()
         mock_response.raise_for_status.assert_called_once()
         mock_response.close.assert_called_once()
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_no_retry_by_default(self, mock_post):
+        """测试默认不启用重试，行为与现有逻辑一致."""
+        mock_post.side_effect = requests.Timeout("timed out")
+
+        with patch("llm_api_benchmark.benchmark.time.sleep") as mock_sleep:
+            with self.assertRaises(BenchmarkRunError):
+                self.benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
+
+        self.assertEqual(self.benchmark.max_retries, 0)
+        self.assertEqual(mock_post.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_retry_on_timeout(self, mock_post):
+        """测试 Timeout 会触发重试并最终成功."""
+        benchmark = LLMAPIBenchmark(
+            self.api_url,
+            self.api_key,
+            self.model,
+            max_retries=2,
+            retry_delay=0.25,
+        )
+        success_response = self._build_stream_response()
+        mock_post.side_effect = [requests.Timeout("timed out"), success_response]
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep") as mock_sleep,
+        ):
+            mock_time.side_effect = [0, 1.0, 2.0]
+            stats = benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
+
+        self.assertEqual(stats["raw"], [1.0])
+        self.assertEqual(mock_post.call_count, 2)
+        mock_sleep.assert_called_once_with(0.25)
+        success_response.close.assert_called_once()
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_retry_on_429(self, mock_post):
+        """测试 HTTP 429 会触发重试."""
+        benchmark = LLMAPIBenchmark(
+            self.api_url,
+            self.api_key,
+            self.model,
+            max_retries=2,
+            retry_delay=0.25,
+        )
+        rate_limit_response = self._build_http_error_response(429, "Too Many Requests")
+        success_response = self._build_json_response(100)
+        mock_post.side_effect = [rate_limit_response, success_response]
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep") as mock_sleep,
+        ):
+            mock_time.side_effect = [0, 1.0, 3.0]
+            throughput_stats, total_time_stats = benchmark.measure_token_throughput(
+                self.test_prompt, runs=1
+            )
+
+        self.assertEqual(throughput_stats["raw"], [50.0])
+        self.assertEqual(total_time_stats["raw"], [2.0])
+        self.assertEqual(mock_post.call_count, 2)
+        mock_sleep.assert_called_once_with(0.25)
+        rate_limit_response.close.assert_called_once()
+        success_response.close.assert_called_once()
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_no_retry_on_400(self, mock_post):
+        """测试 HTTP 400 不会触发重试."""
+        benchmark = LLMAPIBenchmark(
+            self.api_url,
+            self.api_key,
+            self.model,
+            max_retries=3,
+            retry_delay=0.25,
+        )
+        bad_request_response = self._build_http_error_response(400, "Bad Request")
+        mock_post.return_value = bad_request_response
+
+        with patch("llm_api_benchmark.benchmark.time.sleep") as mock_sleep:
+            with self.assertRaises(BenchmarkRunError) as ctx:
+                benchmark.measure_token_throughput(self.test_prompt, runs=1)
+
+        self.assertIn("HTTP 400 Bad Request", str(ctx.exception))
+        self.assertEqual(mock_post.call_count, 1)
+        mock_sleep.assert_not_called()
+        bad_request_response.close.assert_called_once()
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_retry_exponential_backoff(self, mock_post):
+        """测试重试等待时间按指数退避递增."""
+        benchmark = LLMAPIBenchmark(
+            self.api_url,
+            self.api_key,
+            self.model,
+            max_retries=3,
+            retry_delay=0.5,
+        )
+        success_response = self._build_stream_response()
+        mock_post.side_effect = [
+            requests.Timeout("timeout-1"),
+            requests.Timeout("timeout-2"),
+            requests.Timeout("timeout-3"),
+            success_response,
+        ]
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep") as mock_sleep,
+        ):
+            mock_time.side_effect = [0, 1.0, 2.0, 3.0, 4.0]
+            stats = benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
+
+        self.assertEqual(stats["raw"], [1.0])
+        self.assertEqual(mock_post.call_count, 4)
+        self.assertEqual(mock_sleep.call_args_list, [call(0.5), call(1.0), call(2.0)])
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_retry_exhausted_raises(self, mock_post):
+        """测试重试耗尽后最终抛出 BenchmarkRunError."""
+        benchmark = LLMAPIBenchmark(
+            self.api_url,
+            self.api_key,
+            self.model,
+            max_retries=2,
+            retry_delay=0.5,
+        )
+        mock_post.side_effect = requests.Timeout("timed out")
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep") as mock_sleep,
+        ):
+            mock_time.side_effect = [0, 1.0, 2.0]
+            with self.assertRaises(BenchmarkRunError) as ctx:
+                benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
+
+        self.assertIn("请求超时", str(ctx.exception))
+        self.assertEqual(mock_post.call_count, 3)
+        self.assertEqual(mock_sleep.call_args_list, [call(0.5), call(1.0)])
 
     @patch("llm_api_benchmark.benchmark.requests.post")
     def test_measure_token_throughput(self, mock_post):
@@ -403,6 +558,7 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         self.assertEqual(results["prompt_length"], len(self.test_prompt))
         self.assertEqual(results["runs"], 2)
         self.assertEqual(results["warmup_runs"], 0)
+        self.assertEqual(results["max_retries"], 0)
         # 验证详细统计字段存在
         self.assertIn("first_token_latency_stats", results)
         self.assertIn("token_throughput_stats", results)
