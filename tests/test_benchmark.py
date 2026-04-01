@@ -33,6 +33,13 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         return mock_response
 
     @staticmethod
+    def _build_custom_stream_response(lines):
+        """构造返回指定 SSE 行序列的流式响应."""
+        mock_response = MagicMock()
+        mock_response.iter_lines.return_value = lines
+        return mock_response
+
+    @staticmethod
     def _build_json_response(output_tokens):
         """构造非流式响应."""
         mock_response = MagicMock()
@@ -337,6 +344,46 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
         self.assertEqual(mock_post.call_args[1]["json"]["messages"][0]["content"], self.test_prompt)
 
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_streaming_throughput_basic(self, mock_post):
+        """测试流式吞吐量按累计字符数和耗时计算."""
+        mock_response = self._build_custom_stream_response(
+            [
+                b'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+                b'data: {"choices":[{"delta":{"content":" world"}}]}',
+                b"data: [DONE]",
+            ]
+        )
+        mock_post.return_value = mock_response
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+        ):
+            mock_time.side_effect = [0, 2.0]
+            stats = self.benchmark.measure_streaming_throughput(self.test_prompt, runs=1)
+
+        self.assertEqual(stats["avg"], 5.5)
+        self.assertEqual(stats["raw"], [5.5])
+        mock_post.assert_called_once()
+        mock_response.raise_for_status.assert_called_once()
+        mock_response.close.assert_called_once()
+        self.assertTrue(mock_post.call_args[1]["stream"])
+        self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_streaming_throughput_timeout(self, mock_post):
+        """测试流式吞吐量请求超时时若全部失败会抛出异常."""
+        mock_post.side_effect = requests.Timeout("timed out")
+
+        with patch("llm_api_benchmark.benchmark.time.sleep"):
+            with self.assertRaises(BenchmarkRunError) as ctx:
+                self.benchmark.measure_streaming_throughput(self.test_prompt, runs=1)
+
+        self.assertIn("请求超时", str(ctx.exception))
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
+
     def test_warmup_runs_default_zero(self):
         """测试 warmup_runs 默认值为 0."""
         self.assertEqual(self.benchmark.warmup_runs, 0)
@@ -509,7 +556,8 @@ class TestLLMAPIBenchmark(unittest.TestCase):
 
     @patch("llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_first_token_latency")
     @patch("llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_token_throughput")
-    def test_run_comprehensive_benchmark(self, mock_throughput, mock_latency):
+    @patch("llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_streaming_throughput")
+    def test_run_comprehensive_benchmark(self, mock_streaming, mock_throughput, mock_latency):
         """测试综合基准测试功能."""
         # 模拟方法返回值（新格式：stats dict 和 tuple）
         mock_latency.return_value = {
@@ -543,6 +591,17 @@ class TestLLMAPIBenchmark(unittest.TestCase):
             "raw": [2.0],
         }
         mock_throughput.return_value = (throughput_stats, total_time_stats)
+        streaming_stats = {
+            "avg": 25.0,
+            "min": 25.0,
+            "max": 25.0,
+            "median": 25.0,
+            "p90": 25.0,
+            "p99": 25.0,
+            "std_dev": 0,
+            "raw": [25.0],
+        }
+        mock_streaming.return_value = streaming_stats
 
         # 运行测试
         with patch("llm_api_benchmark.benchmark.datetime") as mock_datetime:
@@ -554,6 +613,7 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         self.assertEqual(results["api_url"], self.api_url)
         self.assertEqual(results["first_token_latency"], 0.5)
         self.assertEqual(results["token_throughput"], 50.0)
+        self.assertEqual(results["streaming_throughput"], 25.0)
         self.assertEqual(results["total_time"], 2.0)
         self.assertEqual(results["prompt_length"], len(self.test_prompt))
         self.assertEqual(results["runs"], 2)
@@ -562,7 +622,66 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         # 验证详细统计字段存在
         self.assertIn("first_token_latency_stats", results)
         self.assertIn("token_throughput_stats", results)
+        self.assertIn("streaming_throughput_stats", results)
         self.assertIn("total_time_stats", results)
+
+    @patch("llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_first_token_latency")
+    @patch("llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_token_throughput")
+    @patch("llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_streaming_throughput")
+    def test_streaming_throughput_in_comprehensive(
+        self, mock_streaming, mock_throughput, mock_latency
+    ):
+        """测试综合结果包含流式吞吐量字段和统计对象."""
+        mock_latency.return_value = {
+            "avg": 0.5,
+            "min": 0.5,
+            "max": 0.5,
+            "median": 0.5,
+            "p90": 0.5,
+            "p99": 0.5,
+            "std_dev": 0,
+            "raw": [0.5],
+        }
+        mock_throughput.return_value = (
+            {
+                "avg": 50.0,
+                "min": 50.0,
+                "max": 50.0,
+                "median": 50.0,
+                "p90": 50.0,
+                "p99": 50.0,
+                "std_dev": 0,
+                "raw": [50.0],
+            },
+            {
+                "avg": 2.0,
+                "min": 2.0,
+                "max": 2.0,
+                "median": 2.0,
+                "p90": 2.0,
+                "p99": 2.0,
+                "std_dev": 0,
+                "raw": [2.0],
+            },
+        )
+        mock_streaming.return_value = {
+            "avg": 30.0,
+            "min": 30.0,
+            "max": 30.0,
+            "median": 30.0,
+            "p90": 30.0,
+            "p99": 30.0,
+            "std_dev": 0,
+            "raw": [30.0],
+        }
+
+        with patch("llm_api_benchmark.benchmark.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2023, 1, 1, 12, 0, 0)
+            results = self.benchmark.run_comprehensive_benchmark(self.test_prompt, runs=1)
+
+        self.assertEqual(results["streaming_throughput"], 30.0)
+        self.assertEqual(results["streaming_throughput_stats"]["avg"], 30.0)
+        mock_streaming.assert_called_once_with(self.test_prompt, 1)
 
     def test_compute_stats(self):
         """测试统计计算功能."""

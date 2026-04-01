@@ -81,6 +81,7 @@ def _build_overview_df(results: list):
                 "First Token Latency (s)": round(r.get("first_token_latency", 0), 3),
                 "P90 Latency (s)": round(r.get("first_token_latency_stats", {}).get("p90", 0), 3),
                 "Throughput (tokens/s)": round(r.get("token_throughput", 0), 2),
+                "Stream Throughput (chars/s)": round(r.get("streaming_throughput", 0), 2),
                 "Total Time (s)": round(r.get("total_time", 0), 2),
             }
         )
@@ -127,10 +128,19 @@ def _render_charts(st_module, overview):
             chart_data[["Throughput (tokens/s)"]],
         )
 
-    st_module.subheader("Total Response Time")
-    st_module.bar_chart(
-        chart_data[["Total Time (s)"]],
-    )
+    col3, col4 = st_module.columns(2)
+
+    with col3:
+        st_module.subheader("Streaming Throughput")
+        st_module.bar_chart(
+            chart_data[["Stream Throughput (chars/s)"]],
+        )
+
+    with col4:
+        st_module.subheader("Total Response Time")
+        st_module.bar_chart(
+            chart_data[["Total Time (s)"]],
+        )
 
 
 def _render_per_model_stats(st_module, results: list):
@@ -151,6 +161,12 @@ def _render_per_model_stats(st_module, results: list):
             )
             _render_stats_table(
                 st_module, pd, "Token Throughput (tokens/s)", r.get("token_throughput_stats", {})
+            )
+            _render_stats_table(
+                st_module,
+                pd,
+                "Streaming Throughput (chars/s)",
+                r.get("streaming_throughput_stats", {}),
             )
             _render_stats_table(
                 st_module, pd, "Total Response Time (s)", r.get("total_time_stats", {})

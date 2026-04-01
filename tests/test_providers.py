@@ -46,6 +46,19 @@ class TestOpenAIProvider(unittest.TestCase):
         resp = {"choices": [{"message": {"content": "hello world"}}]}
         self.assertEqual(self.provider.parse_content(resp), "hello world")
 
+    def test_parse_stream_content(self):
+        self.assertEqual(
+            self.provider.parse_stream_content(
+                b'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+            ),
+            "Hello",
+        )
+        self.assertEqual(
+            self.provider.parse_stream_content(b'data: {"choices":[{"delta":{}}]}'),
+            "",
+        )
+        self.assertEqual(self.provider.parse_stream_content(b"data: [DONE]"), "")
+
     def test_is_first_content_event(self):
         self.assertFalse(self.provider.is_first_content_event(b": keep-alive"))
         self.assertFalse(self.provider.is_first_content_event(b"data: [DONE]"))
@@ -94,6 +107,17 @@ class TestClaudeProvider(unittest.TestCase):
         resp = {"content": []}
         self.assertEqual(self.provider.parse_content(resp), "")
 
+    def test_parse_stream_content(self):
+        line = b'data: {"type":"content_block_delta","delta":{"text":"Hi"}}'
+        self.assertEqual(self.provider.parse_stream_content(line), "Hi")
+        self.assertEqual(self.provider.parse_stream_content(b"event: ping"), "")
+        self.assertEqual(
+            self.provider.parse_stream_content(
+                b'data: {"type":"message_stop","delta":{"text":"ignored"}}'
+            ),
+            "",
+        )
+
     def test_is_first_content_event(self):
         delta_line = b'data: {"type":"content_block_delta","delta":{"text":"Hi"}}'
         self.assertTrue(self.provider.is_first_content_event(delta_line))
@@ -125,6 +149,18 @@ class TestAzureOpenAIProvider(unittest.TestCase):
     def test_parse_token_count(self):
         resp = {"usage": {"completion_tokens": 30}, "choices": []}
         self.assertEqual(self.provider.parse_token_count(resp), 30)
+
+    def test_parse_stream_content(self):
+        self.assertEqual(
+            self.provider.parse_stream_content(
+                b'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+            ),
+            "Hello",
+        )
+        self.assertEqual(
+            self.provider.parse_stream_content(b'data: {"choices":[{"delta":{}}]}'),
+            "",
+        )
 
     def test_is_first_content_event(self):
         self.assertFalse(self.provider.is_first_content_event(b": keep-alive"))
@@ -184,6 +220,16 @@ class TestGeminiProvider(unittest.TestCase):
     def test_parse_content(self):
         resp = {"candidates": [{"content": {"parts": [{"text": "hello gemini"}]}}]}
         self.assertEqual(self.provider.parse_content(resp), "hello gemini")
+
+    def test_parse_stream_content(self):
+        self.assertEqual(
+            self.provider.parse_stream_content(
+                b'data: [{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}]'
+            ),
+            "Hello",
+        )
+        self.assertEqual(self.provider.parse_stream_content(b"data: []"), "")
+        self.assertEqual(self.provider.parse_stream_content(b"data: [DONE]"), "")
 
     def test_is_first_content_event(self):
         self.assertTrue(

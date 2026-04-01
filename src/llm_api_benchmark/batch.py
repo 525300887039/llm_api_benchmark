@@ -144,9 +144,9 @@ class BatchBenchmark:
         lines.append("## 性能对比")
         lines.append("")
         lines.append(
-            "| 模型名称 | 首字延迟 (秒) | P90延迟 (秒) | 吞吐量 (tokens/秒) | 总响应时间 (秒) | API端点 |"
+            "| 模型名称 | 首字延迟 (秒) | P90延迟 (秒) | 吞吐量 (tokens/秒) | 流式吞吐量 (字符/秒) | 总响应时间 (秒) | API端点 |"
         )
-        lines.append("| :--- | ---: | ---: | ---: | ---: | :--- |")
+        lines.append("| :--- | ---: | ---: | ---: | ---: | ---: | :--- |")
 
         # 按首字延迟排序（从快到慢）
         sorted_results = sorted(
@@ -159,11 +159,13 @@ class BatchBenchmark:
             latency_stats = result.get("first_token_latency_stats", {})
             p90 = latency_stats.get("p90", 0)
             throughput = result.get("token_throughput", 0)
+            streaming_throughput = result.get("streaming_throughput", 0)
             total_time = result.get("total_time", 0)
             api_url = result.get("api_url", "")
 
             lines.append(
-                f"| {name} | {latency:.3f} | {p90:.3f} | {throughput:.2f} | {total_time:.2f} | {api_url} |"
+                f"| {name} | {latency:.3f} | {p90:.3f} | {throughput:.2f} | "
+                f"{streaming_throughput:.2f} | {total_time:.2f} | {api_url} |"
             )
 
         lines.append("")
@@ -208,6 +210,19 @@ class BatchBenchmark:
                     f"| {ts.get('avg',0):.2f} | {ts.get('min',0):.2f} | {ts.get('max',0):.2f} "
                     f"| {ts.get('median',0):.2f} | {ts.get('p90',0):.2f} "
                     f"| {ts.get('p99',0):.2f} | {ts.get('std_dev',0):.2f} |"
+                )
+                lines.append("")
+
+            sts = result.get("streaming_throughput_stats", {})
+            if sts:
+                lines.append("**流式吞吐量统计 (字符/秒):**")
+                lines.append("")
+                lines.append(f"| 平均 | 最小 | 最大 | 中位数 | P90 | P99 | 标准差 |")
+                lines.append(f"| ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+                lines.append(
+                    f"| {sts.get('avg',0):.2f} | {sts.get('min',0):.2f} | {sts.get('max',0):.2f} "
+                    f"| {sts.get('median',0):.2f} | {sts.get('p90',0):.2f} "
+                    f"| {sts.get('p99',0):.2f} | {sts.get('std_dev',0):.2f} |"
                 )
                 lines.append("")
 

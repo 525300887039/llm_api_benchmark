@@ -369,6 +369,95 @@ class LLMAPIBenchmark:
 
         return throughput_stats, total_time_stats
 
+    def measure_streaming_throughput(self, prompt, runs=3):
+        """
+        测量流式场景下的吞吐量（字符/秒）.
+
+        通过 stream=True 请求，逐行解析 SSE 事件并累计文本字符数，
+        使用 字符数 / 耗时 作为近似吞吐量指标。
+
+        Args:
+            prompt: 测试用的提示词
+            runs: 运行次数
+
+        Returns:
+            dict: 流式吞吐量统计（字符/秒）
+        """
+        throughputs = []
+        failures = []
+
+        def send_request():
+            payload = self.provider.build_chat_payload(prompt, stream=True)
+            return requests.post(
+                self.provider.get_request_url(stream=True),
+                headers=self.provider.get_headers(),
+                json=payload,
+                stream=True,
+                timeout=self.timeout,
+            )
+
+        def consume_stream_content(response):
+            for line in response.iter_lines():
+                self.provider.parse_stream_content(line)
+
+        self._run_warmup_requests(send_request, consume_stream_content)
+
+        for i in range(runs):
+            attempt = 0
+
+            while True:
+                response = None
+                try:
+                    start_time = time.time()
+                    response = send_request()
+                    response.raise_for_status()
+
+                    total_chars = 0
+                    for line in response.iter_lines():
+                        total_chars += len(self.provider.parse_stream_content(line))
+
+                    elapsed = time.time() - start_time
+
+                    if elapsed > 0 and total_chars > 0:
+                        stream_throughput = total_chars / elapsed
+                        throughputs.append(stream_throughput)
+                        print(
+                            f"运行 {i+1}/{runs}: 流式吞吐量 = {stream_throughput:.2f} 字符/秒 "
+                            f"({total_chars} 字符，用时 {elapsed:.2f}秒)"
+                        )
+                    else:
+                        failures.append("未检测到流式输出内容")
+                        print(f"运行 {i+1}/{runs}: 未检测到流式输出内容，跳过本轮")
+                    break
+                except requests.RequestException as exc:
+                    error_message = self._format_request_error(exc)
+                    if self._is_retryable(exc) and attempt < self.max_retries:
+                        attempt += 1
+                        print(
+                            f"运行 {i+1}/{runs}: 请求失败 ({error_message})，"
+                            f"第 {attempt}/{self.max_retries} 次重试..."
+                        )
+                        time.sleep(self.retry_delay * (2 ** (attempt - 1)))
+                        continue
+
+                    failures.append(error_message)
+                    print(f"运行 {i+1}/{runs}: 请求失败 ({error_message})，已跳过")
+                    break
+                finally:
+                    if response is not None:
+                        response.close()
+
+            if i < runs - 1:
+                time.sleep(1)  # 避免请求过于频繁
+
+        self._raise_if_no_success("流式吞吐量", throughputs, failures, runs)
+        stats = self._compute_stats(throughputs)
+
+        if throughputs:
+            print(f"\n平均流式吞吐量: {stats['avg']:.2f} 字符/秒")
+
+        return stats
+
     def run_comprehensive_benchmark(self, prompt, runs=3):
         """
         运行综合性能测试.
@@ -394,6 +483,9 @@ class LLMAPIBenchmark:
         print("\n----- 测试吞吐量 -----")
         throughput_stats, total_time_stats = self.measure_token_throughput(prompt, runs)
 
+        print("\n----- 测试流式吞吐量 -----")
+        streaming_stats = self.measure_streaming_throughput(prompt, runs)
+
         results = {
             "model": self.model,
             "api_url": self.api_url,
@@ -406,10 +498,12 @@ class LLMAPIBenchmark:
             # 向后兼容：保留顶层平均值
             "first_token_latency": latency_stats["avg"],
             "token_throughput": throughput_stats["avg"],
+            "streaming_throughput": streaming_stats["avg"],
             "total_time": total_time_stats["avg"],
             # 详细统计数据
             "first_token_latency_stats": latency_stats,
             "token_throughput_stats": throughput_stats,
+            "streaming_throughput_stats": streaming_stats,
             "total_time_stats": total_time_stats,
         }
 
@@ -423,6 +517,10 @@ class LLMAPIBenchmark:
         print(
             f"吞吐量: {throughput_stats['avg']:.2f} tokens/秒 "
             f"(min={throughput_stats['min']:.2f}, p90={throughput_stats['p90']:.2f})"
+        )
+        print(
+            f"流式吞吐量: {streaming_stats['avg']:.2f} 字符/秒 "
+            f"(min={streaming_stats['min']:.2f}, p90={streaming_stats['p90']:.2f})"
         )
         print(
             f"总响应时间: {total_time_stats['avg']:.2f}秒 "

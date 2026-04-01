@@ -92,6 +92,7 @@ class TestBuildOverviewDf(unittest.TestCase):
                 "first_token_latency": 0.5,
                 "first_token_latency_stats": {"p90": 0.58},
                 "token_throughput": 50.0,
+                "streaming_throughput": 120.0,
                 "total_time": 2.0,
             },
             {
@@ -101,6 +102,7 @@ class TestBuildOverviewDf(unittest.TestCase):
                 "first_token_latency": 0.3,
                 "first_token_latency_stats": {"p90": 0.35},
                 "token_throughput": 80.0,
+                "streaming_throughput": 150.0,
                 "total_time": 1.5,
             },
         ]
@@ -114,6 +116,7 @@ class TestBuildOverviewDf(unittest.TestCase):
         self.assertIn("Name", df.columns)
         self.assertIn("Model", df.columns)
         self.assertIn("Throughput (tokens/s)", df.columns)
+        self.assertIn("Stream Throughput (chars/s)", df.columns)
 
     def test_dataframe_values(self):
         """测试 DataFrame 数值正确性."""
@@ -123,6 +126,7 @@ class TestBuildOverviewDf(unittest.TestCase):
         row_a = df[df["Name"] == "Model A"].iloc[0]
         self.assertAlmostEqual(row_a["First Token Latency (s)"], 0.5, places=3)
         self.assertAlmostEqual(row_a["Throughput (tokens/s)"], 50.0, places=2)
+        self.assertAlmostEqual(row_a["Stream Throughput (chars/s)"], 120.0, places=2)
 
     def test_missing_fields_use_defaults(self):
         """测试缺失字段使用默认值."""
@@ -133,6 +137,7 @@ class TestBuildOverviewDf(unittest.TestCase):
         self.assertEqual(len(df), 1)
         self.assertEqual(df.iloc[0]["First Token Latency (s)"], 0)
         self.assertEqual(df.iloc[0]["Throughput (tokens/s)"], 0)
+        self.assertEqual(df.iloc[0]["Stream Throughput (chars/s)"], 0)
 
 
 if __name__ == "__main__":

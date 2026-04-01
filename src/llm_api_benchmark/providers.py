@@ -25,24 +25,6 @@ def _parse_sse_json(line: bytes):
         return None
 
 
-def _is_openai_first_content_event(line: bytes) -> bool:
-    """判断 OpenAI/Azure OpenAI SSE 行是否包含首个非空内容 token."""
-    data = _parse_sse_json(line)
-    if data is None:
-        return False
-
-    choices = data.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return False
-
-    delta = choices[0].get("delta", {})
-    if not isinstance(delta, dict):
-        return False
-
-    content = delta.get("content")
-    return bool(content)
-
-
 def _append_query_params(url: str, params: Dict[str, str]) -> str:
     """向 URL 追加或覆盖查询参数."""
     parsed = urlsplit(url)
@@ -112,6 +94,11 @@ class APIProvider(ABC):
         ...
 
     @abstractmethod
+    def parse_stream_content(self, line: bytes) -> str:
+        """从 SSE 行中提取文本内容，无内容则返回空字符串."""
+        ...
+
+    @abstractmethod
     def is_first_content_event(self, line: bytes) -> bool:
         """判断 SSE 行是否为首个内容 token."""
         ...
@@ -146,8 +133,24 @@ class OpenAIProvider(APIProvider):
     def parse_content(self, response_json: Dict[str, Any]) -> str:
         return response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
 
+    def parse_stream_content(self, line: bytes) -> str:
+        data = _parse_sse_json(line)
+        if data is None:
+            return ""
+
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+
+        delta = choices[0].get("delta", {})
+        if not isinstance(delta, dict):
+            return ""
+
+        content = delta.get("content", "")
+        return content if isinstance(content, str) else ""
+
     def is_first_content_event(self, line: bytes) -> bool:
-        return _is_openai_first_content_event(line)
+        return bool(self.parse_stream_content(line))
 
 
 class ClaudeProvider(APIProvider):
@@ -182,17 +185,23 @@ class ClaudeProvider(APIProvider):
             return content_blocks[0].get("text", "")
         return ""
 
+    def parse_stream_content(self, line: bytes) -> str:
+        data = _parse_sse_json(line)
+        if not isinstance(data, dict):
+            return ""
+
+        if data.get("type") != "content_block_delta":
+            return ""
+
+        delta = data.get("delta", {})
+        if not isinstance(delta, dict):
+            return ""
+
+        text = delta.get("text", "")
+        return text if isinstance(text, str) else ""
+
     def is_first_content_event(self, line: bytes) -> bool:
-        if not line:
-            return False
-        decoded = line.decode("utf-8", errors="ignore").strip()
-        if decoded.startswith("data:"):
-            try:
-                data = json.loads(decoded[5:].strip())
-                return data.get("type") == "content_block_delta"
-            except (json.JSONDecodeError, ValueError):
-                pass
-        return False
+        return bool(self.parse_stream_content(line))
 
 
 class AzureOpenAIProvider(OpenAIProvider):
@@ -242,11 +251,14 @@ class GeminiProvider(APIProvider):
     def parse_content(self, response_json: Dict[str, Any]) -> str:
         return _extract_gemini_text(response_json)
 
-    def is_first_content_event(self, line: bytes) -> bool:
+    def parse_stream_content(self, line: bytes) -> str:
         data = _parse_sse_json(line)
         if data is None:
-            return False
-        return bool(_extract_gemini_text(data))
+            return ""
+        return _extract_gemini_text(data)
+
+    def is_first_content_event(self, line: bytes) -> bool:
+        return bool(self.parse_stream_content(line))
 
 
 # Provider 注册表
