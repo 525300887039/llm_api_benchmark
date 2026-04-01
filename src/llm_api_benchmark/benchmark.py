@@ -17,7 +17,9 @@ class BenchmarkRunError(RuntimeError):
 class LLMAPIBenchmark:
     """大语言模型API性能测试类."""
 
-    def __init__(self, api_url, api_key, model, api_type="openai", timeout=None):
+    def __init__(
+        self, api_url, api_key, model, api_type="openai", timeout=None, warmup_runs=0
+    ):
         """
         初始化API基准测试对象.
 
@@ -27,12 +29,14 @@ class LLMAPIBenchmark:
             model: 要测试的模型名称
             api_type: API类型 ("openai", "claude", "azure", "gemini")
             timeout: requests timeout 配置，None 表示使用 requests 默认行为
+            warmup_runs: 正式测量前的预热次数，必须 >= 0
         """
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
         self.api_type = api_type
         self.timeout = self._normalize_timeout(timeout)
+        self.warmup_runs = self._normalize_warmup_runs(warmup_runs)
         self.provider = create_provider(api_type, api_url, api_key, model)
 
     @staticmethod
@@ -53,6 +57,13 @@ class LLMAPIBenchmark:
             return float(connect_timeout), float(read_timeout)
 
         raise ValueError("timeout 必须为正数，或包含两个正数的列表/元组")
+
+    @staticmethod
+    def _normalize_warmup_runs(warmup_runs: Any) -> int:
+        """标准化 warmup_runs 配置."""
+        if not isinstance(warmup_runs, int) or warmup_runs < 0:
+            raise ValueError("warmup_runs 必须为大于等于 0 的整数")
+        return warmup_runs
 
     @staticmethod
     def _format_request_error(exc: requests.RequestException) -> str:
@@ -132,6 +143,26 @@ class LLMAPIBenchmark:
         }
         return stats
 
+    def _run_warmup_requests(self, request_factory, response_consumer):
+        """按配置执行预热请求，结果不纳入统计."""
+        if self.warmup_runs <= 0:
+            return
+
+        for i in range(self.warmup_runs):
+            print(f"预热 {i+1}/{self.warmup_runs}...")
+            response = None
+            try:
+                response = request_factory()
+                response.raise_for_status()
+                response_consumer(response)
+            except (requests.RequestException, ValueError):
+                pass
+            finally:
+                if response is not None:
+                    response.close()
+
+        print("预热完成，开始正式测量\n")
+
     def measure_first_token_latency(self, prompt, num_runs=3):
         """
         测量首字延迟（从发送请求到收到第一个token的时间）.
@@ -146,20 +177,30 @@ class LLMAPIBenchmark:
         latencies = []
         failures = []
 
-        for i in range(num_runs):
+        def send_request():
             payload = self.provider.build_chat_payload(prompt, stream=True)
+            return requests.post(
+                self.provider.get_request_url(stream=True),
+                headers=self.provider.get_headers(),
+                json=payload,
+                stream=True,
+                timeout=self.timeout,
+            )
+
+        def consume_stream_until_first_token(response):
+            for line in response.iter_lines():
+                if self.provider.is_first_content_event(line):
+                    break
+
+        self._run_warmup_requests(send_request, consume_stream_until_first_token)
+
+        for i in range(num_runs):
             response = None
             latency = None
             failed = False
             try:
                 start_time = time.time()
-                response = requests.post(
-                    self.provider.get_request_url(stream=True),
-                    headers=self.provider.get_headers(),
-                    json=payload,
-                    stream=True,
-                    timeout=self.timeout,
-                )
+                response = send_request()
                 response.raise_for_status()
 
                 # 读取第一个内容数据包
@@ -207,17 +248,22 @@ class LLMAPIBenchmark:
         total_times = []
         failures = []
 
-        for i in range(runs):
+        def send_request():
             payload = self.provider.build_chat_payload(prompt, stream=False)
+            return requests.post(
+                self.provider.get_request_url(stream=False),
+                headers=self.provider.get_headers(),
+                json=payload,
+                timeout=self.timeout,
+            )
+
+        self._run_warmup_requests(send_request, lambda response: response.json())
+
+        for i in range(runs):
             response = None
             try:
                 start_time = time.time()
-                response = requests.post(
-                    self.provider.get_request_url(stream=False),
-                    headers=self.provider.get_headers(),
-                    json=payload,
-                    timeout=self.timeout,
-                )
+                response = send_request()
                 response.raise_for_status()
                 end_time = time.time()
 
@@ -274,6 +320,7 @@ class LLMAPIBenchmark:
         print(f"API 类型: {self.api_type}")
         print(f"测试提示词: {prompt[:50]}... ({len(prompt)} 字符)")
         print(f"运行次数: {runs}")
+        print(f"预热轮次: {self.warmup_runs}")
 
         print("\n----- 测试首字延迟 -----")
         latency_stats = self.measure_first_token_latency(prompt, runs)
@@ -288,6 +335,7 @@ class LLMAPIBenchmark:
             "timestamp": datetime.now().isoformat(),
             "prompt_length": len(prompt),
             "runs": runs,
+            "warmup_runs": self.warmup_runs,
             # 向后兼容：保留顶层平均值
             "first_token_latency": latency_stats["avg"],
             "token_throughput": throughput_stats["avg"],
@@ -300,6 +348,7 @@ class LLMAPIBenchmark:
 
         print("\n===== 基准测试结果摘要 =====")
         print(f"模型: {self.model}")
+        print(f"预热轮次: {self.warmup_runs}")
         print(
             f"首字延迟: {latency_stats['avg']:.3f}秒 "
             f"(min={latency_stats['min']:.3f}, p90={latency_stats['p90']:.3f})"

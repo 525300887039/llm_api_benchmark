@@ -59,6 +59,7 @@ class TestRunBenchmarkCli(unittest.TestCase):
             "gpt-3.5-turbo",
             "openai",
             timeout=45.0,
+            warmup_runs=0,
         )
         mock_benchmark.run_comprehensive_benchmark.assert_called_once()
 

@@ -67,6 +67,7 @@ class TestBatchBenchmark(unittest.TestCase):
             "test-model",
             "openai",
             timeout=[10, 120],
+            warmup_runs=0,
         )
 
     @patch("llm_api_benchmark.batch.LLMAPIBenchmark")

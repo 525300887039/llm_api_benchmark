@@ -19,6 +19,29 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         self.benchmark = LLMAPIBenchmark(self.api_url, self.api_key, self.model)
         self.test_prompt = "这是一个测试提示词"
 
+    @staticmethod
+    def _build_stream_response(event_log=None, label=None):
+        """构造带可观测消费顺序的流式响应."""
+        mock_response = MagicMock()
+
+        def iter_lines():
+            if event_log is not None and label is not None:
+                event_log.append(label)
+            return iter([b'data: {"choices":[{"delta":{"content":"Hello"}}]}'])
+
+        mock_response.iter_lines.side_effect = iter_lines
+        return mock_response
+
+    @staticmethod
+    def _build_json_response(output_tokens):
+        """构造非流式响应."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "usage": {"completion_tokens": output_tokens},
+            "choices": [{"message": {"content": "测试回复" * 20}}],
+        }
+        return mock_response
+
     @patch("llm_api_benchmark.benchmark.requests.post")
     def test_measure_first_token_latency(self, mock_post):
         """测试首字延迟测量功能."""
@@ -159,6 +182,102 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
         self.assertEqual(mock_post.call_args[1]["json"]["messages"][0]["content"], self.test_prompt)
 
+    def test_warmup_runs_default_zero(self):
+        """测试 warmup_runs 默认值为 0."""
+        self.assertEqual(self.benchmark.warmup_runs, 0)
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_warmup_runs_executes_before_measurement(self, mock_post):
+        """测试预热请求会先于正式测量执行."""
+        benchmark = LLMAPIBenchmark(
+            self.api_url,
+            self.api_key,
+            self.model,
+            warmup_runs=2,
+        )
+        event_log = []
+        mock_post.side_effect = [
+            self._build_stream_response(event_log, "warmup-1"),
+            self._build_stream_response(event_log, "warmup-2"),
+            self._build_stream_response(event_log, "measure-1"),
+        ]
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+        ):
+            mock_time.side_effect = iter(range(20))
+            stats = benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
+
+        self.assertEqual(event_log, ["warmup-1", "warmup-2", "measure-1"])
+        self.assertEqual(stats["raw"], [1])
+        self.assertEqual(mock_post.call_count, 3)
+        for call_args in mock_post.call_args_list:
+            self.assertTrue(call_args[1]["stream"])
+            self.assertEqual(call_args[1]["timeout"], benchmark.timeout)
+            self.assertEqual(call_args[1]["json"]["model"], self.model)
+            self.assertEqual(call_args[1]["json"]["messages"][0]["content"], self.test_prompt)
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_warmup_runs_not_included_in_stats(self, mock_post):
+        """测试预热期间的数据不会进入统计结果."""
+        benchmark = LLMAPIBenchmark(
+            self.api_url,
+            self.api_key,
+            self.model,
+            warmup_runs=1,
+        )
+        mock_post.side_effect = [
+            self._build_json_response(999),
+            self._build_json_response(100),
+            self._build_json_response(200),
+        ]
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+        ):
+            mock_time.side_effect = iter(range(20))
+            throughput_stats, total_time_stats = benchmark.measure_token_throughput(
+                self.test_prompt, runs=2
+            )
+
+        self.assertEqual(throughput_stats["raw"], [100.0, 200.0])
+        self.assertEqual(total_time_stats["raw"], [1, 1])
+        self.assertEqual(mock_post.call_count, 3)
+        for call_args in mock_post.call_args_list:
+            self.assertNotIn("stream", call_args[1])
+            self.assertEqual(call_args[1]["timeout"], benchmark.timeout)
+            self.assertEqual(call_args[1]["json"]["model"], self.model)
+            self.assertEqual(call_args[1]["json"]["messages"][0]["content"], self.test_prompt)
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_warmup_runs_errors_ignored(self, mock_post):
+        """测试预热期间的异常不会影响正式测量."""
+        benchmark = LLMAPIBenchmark(
+            self.api_url,
+            self.api_key,
+            self.model,
+            warmup_runs=1,
+        )
+        mock_post.side_effect = [requests.Timeout("warmup timed out"), self._build_json_response(100)]
+
+        with (
+            patch("builtins.print") as mock_print,
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+        ):
+            mock_time.side_effect = [0, 2.0]
+            throughput_stats, total_time_stats = benchmark.measure_token_throughput(
+                self.test_prompt, runs=1
+            )
+
+        printed_lines = [" ".join(str(arg) for arg in call.args) for call in mock_print.call_args_list]
+        self.assertEqual(throughput_stats["raw"], [50.0])
+        self.assertEqual(total_time_stats["raw"], [2.0])
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertFalse(any("请求失败" in line for line in printed_lines))
+
     @patch("llm_api_benchmark.benchmark.requests.post")
     def test_measure_token_throughput_timeout(self, mock_post):
         """测试吞吐量请求超时时若全部失败会抛出异常."""
@@ -283,6 +402,7 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         self.assertEqual(results["total_time"], 2.0)
         self.assertEqual(results["prompt_length"], len(self.test_prompt))
         self.assertEqual(results["runs"], 2)
+        self.assertEqual(results["warmup_runs"], 0)
         # 验证详细统计字段存在
         self.assertIn("first_token_latency_stats", results)
         self.assertIn("token_throughput_stats", results)

@@ -57,6 +57,7 @@ class BatchBenchmark:
         runs = general_config.get("runs", 3)
         output_dir = general_config.get("output_dir", "./results")
         timeout = general_config.get("timeout")
+        warmup_runs = general_config.get("warmup_runs", 0)
 
         # 获取API配置列表
         apis = self.config.get("apis", [])
@@ -81,7 +82,14 @@ class BatchBenchmark:
             print(f"{'='*80}\n")
 
             try:
-                benchmark = LLMAPIBenchmark(url, key, model, api_type, timeout=timeout)
+                benchmark = LLMAPIBenchmark(
+                    url,
+                    key,
+                    model,
+                    api_type,
+                    timeout=timeout,
+                    warmup_runs=warmup_runs,
+                )
                 result = benchmark.run_comprehensive_benchmark(prompt, runs)
 
                 # 添加API名称和测试时间
