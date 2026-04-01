@@ -51,9 +51,12 @@ class BatchBenchmark:
         """
         # 获取通用参数
         general_config = self.config.get("general", {})
-        prompt = general_config.get("prompt", "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。")
+        prompt = general_config.get(
+            "prompt", "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。"
+        )
         runs = general_config.get("runs", 3)
         output_dir = general_config.get("output_dir", "./results")
+        timeout = general_config.get("timeout")
 
         # 获取API配置列表
         apis = self.config.get("apis", [])
@@ -78,7 +81,7 @@ class BatchBenchmark:
             print(f"{'='*80}\n")
 
             try:
-                benchmark = LLMAPIBenchmark(url, key, model, api_type)
+                benchmark = LLMAPIBenchmark(url, key, model, api_type, timeout=timeout)
                 result = benchmark.run_comprehensive_benchmark(prompt, runs)
 
                 # 添加API名称和测试时间
@@ -86,7 +89,9 @@ class BatchBenchmark:
                 result["test_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 # 保存结果到文件
-                result_file = os.path.join(output_dir, f"{name.replace(' ', '_').lower()}_{int(time.time())}.json")
+                result_file = os.path.join(
+                    output_dir, f"{name.replace(' ', '_').lower()}_{int(time.time())}.json"
+                )
                 with open(result_file, "w", encoding="utf-8") as f:
                     json.dump(result, f, ensure_ascii=False, indent=2)
 
@@ -126,11 +131,15 @@ class BatchBenchmark:
         # 创建性能对比表格
         lines.append("## 性能对比")
         lines.append("")
-        lines.append("| 模型名称 | 首字延迟 (秒) | P90延迟 (秒) | 吞吐量 (tokens/秒) | 总响应时间 (秒) | API端点 |")
+        lines.append(
+            "| 模型名称 | 首字延迟 (秒) | P90延迟 (秒) | 吞吐量 (tokens/秒) | 总响应时间 (秒) | API端点 |"
+        )
         lines.append("| :--- | ---: | ---: | ---: | ---: | :--- |")
 
         # 按首字延迟排序（从快到慢）
-        sorted_results = sorted(self.results, key=lambda x: x.get("first_token_latency", float("inf")))
+        sorted_results = sorted(
+            self.results, key=lambda x: x.get("first_token_latency", float("inf"))
+        )
 
         for result in sorted_results:
             name = result.get("name", "未知")
@@ -141,7 +150,9 @@ class BatchBenchmark:
             total_time = result.get("total_time", 0)
             api_url = result.get("api_url", "")
 
-            lines.append(f"| {name} | {latency:.3f} | {p90:.3f} | {throughput:.2f} | {total_time:.2f} | {api_url} |")
+            lines.append(
+                f"| {name} | {latency:.3f} | {p90:.3f} | {throughput:.2f} | {total_time:.2f} | {api_url} |"
+            )
 
         lines.append("")
 
@@ -167,9 +178,11 @@ class BatchBenchmark:
                 lines.append("")
                 lines.append(f"| 平均 | 最小 | 最大 | 中位数 | P90 | P99 | 标准差 |")
                 lines.append(f"| ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
-                lines.append(f"| {ls.get('avg',0):.3f}s | {ls.get('min',0):.3f}s | {ls.get('max',0):.3f}s "
-                             f"| {ls.get('median',0):.3f}s | {ls.get('p90',0):.3f}s "
-                             f"| {ls.get('p99',0):.3f}s | {ls.get('std_dev',0):.3f}s |")
+                lines.append(
+                    f"| {ls.get('avg',0):.3f}s | {ls.get('min',0):.3f}s | {ls.get('max',0):.3f}s "
+                    f"| {ls.get('median',0):.3f}s | {ls.get('p90',0):.3f}s "
+                    f"| {ls.get('p99',0):.3f}s | {ls.get('std_dev',0):.3f}s |"
+                )
                 lines.append("")
 
             # 吞吐量统计
@@ -179,9 +192,11 @@ class BatchBenchmark:
                 lines.append("")
                 lines.append(f"| 平均 | 最小 | 最大 | 中位数 | P90 | P99 | 标准差 |")
                 lines.append(f"| ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
-                lines.append(f"| {ts.get('avg',0):.2f} | {ts.get('min',0):.2f} | {ts.get('max',0):.2f} "
-                             f"| {ts.get('median',0):.2f} | {ts.get('p90',0):.2f} "
-                             f"| {ts.get('p99',0):.2f} | {ts.get('std_dev',0):.2f} |")
+                lines.append(
+                    f"| {ts.get('avg',0):.2f} | {ts.get('min',0):.2f} | {ts.get('max',0):.2f} "
+                    f"| {ts.get('median',0):.2f} | {ts.get('p90',0):.2f} "
+                    f"| {ts.get('p99',0):.2f} | {ts.get('std_dev',0):.2f} |"
+                )
                 lines.append("")
 
             # 总响应时间统计
@@ -191,9 +206,11 @@ class BatchBenchmark:
                 lines.append("")
                 lines.append(f"| 平均 | 最小 | 最大 | 中位数 | P90 | P99 | 标准差 |")
                 lines.append(f"| ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
-                lines.append(f"| {tt.get('avg',0):.2f}s | {tt.get('min',0):.2f}s | {tt.get('max',0):.2f}s "
-                             f"| {tt.get('median',0):.2f}s | {tt.get('p90',0):.2f}s "
-                             f"| {tt.get('p99',0):.2f}s | {tt.get('std_dev',0):.2f}s |")
+                lines.append(
+                    f"| {tt.get('avg',0):.2f}s | {tt.get('min',0):.2f}s | {tt.get('max',0):.2f}s "
+                    f"| {tt.get('median',0):.2f}s | {tt.get('p90',0):.2f}s "
+                    f"| {tt.get('p99',0):.2f}s | {tt.get('std_dev',0):.2f}s |"
+                )
                 lines.append("")
 
         # 写入文件
@@ -202,6 +219,7 @@ class BatchBenchmark:
 
         print(f"\n对比报告已生成: {report_path}")
         return report_path
+
 
 def run_batch_benchmark(config_file: str) -> str:
     """
@@ -219,7 +237,9 @@ def run_batch_benchmark(config_file: str) -> str:
 
     general_config = batch.config.get("general", {})
     output_dir = general_config.get("output_dir", "./results")
-    print(f"\n提示: 运行 'llm-api-benchmark report --results_dir {output_dir}' "
-          "可启动交互式可视化报告")
+    print(
+        f"\n提示: 运行 'llm-api-benchmark report --results_dir {output_dir}' "
+        "可启动交互式可视化报告"
+    )
 
     return report_path
