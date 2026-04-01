@@ -4,6 +4,8 @@ import json
 import os
 import glob
 
+from .constants import DEFAULT_OUTPUT_DIR
+
 
 def load_results(results_dir: str) -> list:
     """
@@ -197,6 +199,6 @@ if __name__ == "__main__":
     import argparse as _ap
 
     _parser = _ap.ArgumentParser()
-    _parser.add_argument("--results_dir", default="./results")
+    _parser.add_argument("--results_dir", default=DEFAULT_OUTPUT_DIR)
     _args, _ = _parser.parse_known_args()
     run_dashboard(_args.results_dir)

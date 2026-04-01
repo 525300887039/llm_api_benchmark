@@ -69,7 +69,7 @@ class TestBatchBenchmark(unittest.TestCase):
             batch = BatchBenchmark(config_path)
             call_order = []
 
-            def fake_run(api_config, index, prompt, runs, output_dir, timeout):
+            def fake_run(api_config, index):
                 call_order.append(api_config["name"])
                 return {"name": api_config["name"]}
 
@@ -93,7 +93,7 @@ class TestBatchBenchmark(unittest.TestCase):
             max_active_calls = 0
             lock = threading.Lock()
 
-            def fake_run(api_config, index, prompt, runs, output_dir, timeout):
+            def fake_run(api_config, index):
                 nonlocal active_calls, max_active_calls
                 with lock:
                     active_calls += 1
@@ -117,7 +117,7 @@ class TestBatchBenchmark(unittest.TestCase):
             config_path = self._write_config(temp_dir, general_lines=["parallel = 3"], apis=apis)
             batch = BatchBenchmark(config_path)
 
-            def fake_run(api_config, index, prompt, runs, output_dir, timeout):
+            def fake_run(api_config, index):
                 if api_config["name"] == "API 2":
                     raise RuntimeError("boom")
                 return {"name": api_config["name"]}
@@ -143,7 +143,7 @@ class TestBatchBenchmark(unittest.TestCase):
                     executor_args["max_workers"] = max_workers
                     super().__init__(max_workers=max_workers, *args, **kwargs)
 
-            def fake_run(api_config, index, prompt, runs, output_dir, timeout):
+            def fake_run(api_config, index):
                 return {"name": api_config["name"]}
 
             with patch.object(batch, "_run_single_api_test", side_effect=fake_run):

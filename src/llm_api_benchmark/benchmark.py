@@ -8,6 +8,7 @@ from typing import Any
 import requests
 
 from .providers import create_provider
+from .constants import DEFAULT_MAX_RETRIES, DEFAULT_RETRY_DELAY, DEFAULT_WARMUP_RUNS
 
 
 class BenchmarkRunError(RuntimeError):
@@ -24,9 +25,9 @@ class LLMAPIBenchmark:
         model,
         api_type="openai",
         timeout=None,
-        warmup_runs=0,
-        max_retries=0,
-        retry_delay=1.0,
+        warmup_runs=DEFAULT_WARMUP_RUNS,
+        max_retries=DEFAULT_MAX_RETRIES,
+        retry_delay=DEFAULT_RETRY_DELAY,
     ):
         """
         初始化API基准测试对象.

@@ -5,6 +5,14 @@ import json
 import sys
 from .benchmark import LLMAPIBenchmark
 from .batch import run_batch_benchmark
+from .constants import (
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_PROMPT,
+    DEFAULT_RETRY_DELAY,
+    DEFAULT_RUNS,
+    DEFAULT_WARMUP_RUNS,
+)
 
 
 def run_benchmark_cli():
@@ -28,16 +36,16 @@ def run_benchmark_cli():
     single_parser.add_argument("--model", default="gpt-3.5-turbo", help="要测试的模型名称")
     single_parser.add_argument(
         "--prompt",
-        default="解释量子力学和相对论之间的关系，并给出三个实际应用的例子。",
+        default=DEFAULT_PROMPT,
         help="测试提示词",
     )
-    single_parser.add_argument("--runs", type=int, default=3, help="每项测试运行次数")
-    single_parser.add_argument("--warmup_runs", type=int, default=0, help="正式测量前的预热次数")
-    single_parser.add_argument("--max_retries", type=int, default=0, help="单轮请求失败后的最大重试次数")
+    single_parser.add_argument("--runs", type=int, default=DEFAULT_RUNS, help="每项测试运行次数")
+    single_parser.add_argument("--warmup_runs", type=int, default=DEFAULT_WARMUP_RUNS, help="正式测量前的预热次数")
+    single_parser.add_argument("--max_retries", type=int, default=DEFAULT_MAX_RETRIES, help="单轮请求失败后的最大重试次数")
     single_parser.add_argument(
         "--retry_delay",
         type=float,
-        default=1.0,
+        default=DEFAULT_RETRY_DELAY,
         help="初始重试等待秒数，后续按指数退避",
     )
     single_parser.add_argument("--output", help="结果输出的JSON文件路径")
@@ -56,7 +64,7 @@ def run_benchmark_cli():
     # 可视化报告的子命令
     report_parser = subparsers.add_parser("report", help="启动交互式可视化报告")
     report_parser.add_argument(
-        "--results_dir", default="./results", help="测试结果目录 (默认: ./results)"
+        "--results_dir", default=DEFAULT_OUTPUT_DIR, help="测试结果目录 (默认: ./results)"
     )
     report_parser.add_argument("--port", type=int, default=8501, help="Streamlit 端口 (默认: 8501)")
 

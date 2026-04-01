@@ -10,11 +10,15 @@ from typing import Dict, List, Any
 import tomli
 
 from .benchmark import LLMAPIBenchmark
-
-
-DEFAULT_PROMPT = "解释量子力学和相对论之间的关系，并给出三个实际应用的例子。"
-DEFAULT_OUTPUT_DIR = "./results"
-DEFAULT_REPORT_FILE = "benchmark_report.md"
+from .constants import (
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_PROMPT,
+    DEFAULT_REPORT_FILE,
+    DEFAULT_RETRY_DELAY,
+    DEFAULT_RUNS,
+    DEFAULT_WARMUP_RUNS,
+)
 
 
 class BatchBenchmark:
@@ -29,16 +33,16 @@ class BatchBenchmark:
         """
         self.config_file = config_file
         self.config = self._load_config()
-        self.general_config = self.config.get("general", {})
-        self.prompt = self.general_config.get("prompt", DEFAULT_PROMPT)
-        self.runs = self.general_config.get("runs", 3)
-        self.output_dir = self.general_config.get("output_dir", DEFAULT_OUTPUT_DIR)
-        self.report_file = self.general_config.get("report_file", DEFAULT_REPORT_FILE)
-        self.timeout = self.general_config.get("timeout")
-        self.parallel = self.general_config.get("parallel", 1)
-        self.warmup_runs = self.general_config.get("warmup_runs", 0)
-        self.max_retries = self.general_config.get("max_retries", 0)
-        self.retry_delay = self.general_config.get("retry_delay", 1.0)
+        general_config = self.config.get("general", {})
+        self.prompt = general_config.get("prompt", DEFAULT_PROMPT)
+        self.runs = general_config.get("runs", DEFAULT_RUNS)
+        self.output_dir = general_config.get("output_dir", DEFAULT_OUTPUT_DIR)
+        self.report_file = general_config.get("report_file", DEFAULT_REPORT_FILE)
+        self.timeout = general_config.get("timeout")
+        self.parallel = general_config.get("parallel", 1)
+        self.warmup_runs = general_config.get("warmup_runs", DEFAULT_WARMUP_RUNS)
+        self.max_retries = general_config.get("max_retries", DEFAULT_MAX_RETRIES)
+        self.retry_delay = general_config.get("retry_delay", DEFAULT_RETRY_DELAY)
         self.apis = self.config.get("apis", [])
         self.results = []
 
@@ -62,15 +66,8 @@ class BatchBenchmark:
         self,
         api_config: Dict[str, Any],
         index: int,
-        prompt: str,
-        runs: int,
-        output_dir: str,
-        timeout: Any,
     ) -> Dict[str, Any] | None:
         """执行单个 API 的基准测试，返回结果 dict 或 None（失败时）."""
-        prompt = prompt or self.prompt
-        runs = runs or self.runs
-        timeout = self.timeout if timeout is None else timeout
         name = api_config.get("name", f"API_{index+1}")
         url = api_config.get("url")
         key = api_config.get("key")
@@ -100,12 +97,12 @@ class BatchBenchmark:
                 key,
                 model,
                 api_type,
-                timeout=timeout,
+                timeout=self.timeout,
                 warmup_runs=self.warmup_runs,
                 max_retries=self.max_retries,
                 retry_delay=self.retry_delay,
             )
-            result = benchmark.run_comprehensive_benchmark(prompt, runs)
+            result = benchmark.run_comprehensive_benchmark(self.prompt, self.runs)
 
             # 添加API名称和测试时间
             result["name"] = name
@@ -147,9 +144,7 @@ class BatchBenchmark:
 
         if self.parallel == 1:
             for i, api_config in enumerate(self.apis):
-                result = self._run_single_api_test(
-                    api_config, i, self.prompt, self.runs, self.output_dir, self.timeout
-                )
+                result = self._run_single_api_test(api_config, i)
                 if result is not None:
                     results.append(result)
         else:
@@ -167,10 +162,6 @@ class BatchBenchmark:
                         self._run_single_api_test,
                         api_config,
                         i,
-                        self.prompt,
-                        self.runs,
-                        self.output_dir,
-                        self.timeout,
                     ): api_config.get("name", f"API_{i+1}")
                     for i, api_config in enumerate(self.apis)
                 }
