@@ -1,12 +1,12 @@
 """API Provider 适配器的单元测试."""
 
 import unittest
-import json
 
 from llm_api_benchmark.providers import (
     OpenAIProvider,
     ClaudeProvider,
     AzureOpenAIProvider,
+    GeminiProvider,
     create_provider,
 )
 
@@ -47,9 +47,15 @@ class TestOpenAIProvider(unittest.TestCase):
         self.assertEqual(self.provider.parse_content(resp), "hello world")
 
     def test_is_first_content_event(self):
-        self.assertTrue(self.provider.is_first_content_event(b'data: {"id":"x"}'))
-        self.assertFalse(self.provider.is_first_content_event(b''))
-        self.assertFalse(self.provider.is_first_content_event(b'   '))
+        self.assertFalse(self.provider.is_first_content_event(b": keep-alive"))
+        self.assertFalse(self.provider.is_first_content_event(b"data: [DONE]"))
+        self.assertFalse(self.provider.is_first_content_event(b'data: {"choices":[{"delta":{}}]}'))
+        self.assertTrue(
+            self.provider.is_first_content_event(
+                b'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+            )
+        )
+        self.assertFalse(self.provider.is_first_content_event(b""))
 
 
 class TestClaudeProvider(unittest.TestCase):
@@ -91,8 +97,8 @@ class TestClaudeProvider(unittest.TestCase):
     def test_is_first_content_event(self):
         delta_line = b'data: {"type":"content_block_delta","delta":{"text":"Hi"}}'
         self.assertTrue(self.provider.is_first_content_event(delta_line))
-        self.assertFalse(self.provider.is_first_content_event(b''))
-        self.assertFalse(self.provider.is_first_content_event(b'event: ping'))
+        self.assertFalse(self.provider.is_first_content_event(b""))
+        self.assertFalse(self.provider.is_first_content_event(b"event: ping"))
 
 
 class TestAzureOpenAIProvider(unittest.TestCase):
@@ -120,6 +126,74 @@ class TestAzureOpenAIProvider(unittest.TestCase):
         resp = {"usage": {"completion_tokens": 30}, "choices": []}
         self.assertEqual(self.provider.parse_token_count(resp), 30)
 
+    def test_is_first_content_event(self):
+        self.assertFalse(self.provider.is_first_content_event(b": keep-alive"))
+        self.assertFalse(self.provider.is_first_content_event(b"data: [DONE]"))
+        self.assertFalse(self.provider.is_first_content_event(b'data: {"choices":[{"delta":{}}]}'))
+        self.assertTrue(
+            self.provider.is_first_content_event(
+                b'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+            )
+        )
+        self.assertFalse(self.provider.is_first_content_event(b""))
+
+
+class TestGeminiProvider(unittest.TestCase):
+    """Gemini Provider 测试."""
+
+    def setUp(self):
+        self.provider = GeminiProvider(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            "gemini-key-test",
+            "gemini-2.5-flash",
+        )
+
+    def test_get_headers(self):
+        headers = self.provider.get_headers()
+        self.assertEqual(
+            headers,
+            {
+                "Content-Type": "application/json",
+                "x-goog-api-key": "gemini-key-test",
+            },
+        )
+
+    def test_get_request_url(self):
+        self.assertEqual(
+            self.provider.get_request_url(),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        )
+
+    def test_get_request_url_stream(self):
+        self.assertEqual(
+            self.provider.get_request_url(stream=True),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+        )
+
+    def test_build_chat_payload(self):
+        payload = self.provider.build_chat_payload("hello", stream=True)
+        self.assertEqual(
+            payload,
+            {"contents": [{"parts": [{"text": "hello"}]}]},
+        )
+
+    def test_parse_token_count(self):
+        resp = {"usageMetadata": {"candidatesTokenCount": 64}}
+        self.assertEqual(self.provider.parse_token_count(resp), 64)
+
+    def test_parse_content(self):
+        resp = {"candidates": [{"content": {"parts": [{"text": "hello gemini"}]}}]}
+        self.assertEqual(self.provider.parse_content(resp), "hello gemini")
+
+    def test_is_first_content_event(self):
+        self.assertTrue(
+            self.provider.is_first_content_event(
+                b'data: [{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}]'
+            )
+        )
+        self.assertFalse(self.provider.is_first_content_event(b"data: []"))
+        self.assertFalse(self.provider.is_first_content_event(b""))
+
 
 class TestCreateProvider(unittest.TestCase):
     """工厂函数测试."""
@@ -136,6 +210,10 @@ class TestCreateProvider(unittest.TestCase):
         p = create_provider("azure", "http://test", "key", "model")
         self.assertIsInstance(p, AzureOpenAIProvider)
 
+    def test_create_gemini(self):
+        p = create_provider("gemini", "http://test", "key", "model")
+        self.assertIsInstance(p, GeminiProvider)
+
     def test_create_case_insensitive(self):
         p = create_provider("OpenAI", "http://test", "key", "model")
         self.assertIsInstance(p, OpenAIProvider)
@@ -145,5 +223,5 @@ class TestCreateProvider(unittest.TestCase):
             create_provider("invalid_type", "http://test", "key", "model")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

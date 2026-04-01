@@ -3,6 +3,79 @@
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+
+def _parse_sse_json(line: bytes):
+    """解析 SSE 行并返回 JSON 数据，无效行返回 None."""
+    if not line:
+        return None
+
+    decoded = line.decode("utf-8", errors="ignore").strip()
+    if not decoded.startswith("data:"):
+        return None
+
+    payload = decoded[5:].strip()
+    if not payload or payload == "[DONE]":
+        return None
+
+    try:
+        return json.loads(payload)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _is_openai_first_content_event(line: bytes) -> bool:
+    """判断 OpenAI/Azure OpenAI SSE 行是否包含首个非空内容 token."""
+    data = _parse_sse_json(line)
+    if data is None:
+        return False
+
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+
+    delta = choices[0].get("delta", {})
+    if not isinstance(delta, dict):
+        return False
+
+    content = delta.get("content")
+    return bool(content)
+
+
+def _append_query_params(url: str, params: Dict[str, str]) -> str:
+    """向 URL 追加或覆盖查询参数."""
+    parsed = urlsplit(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update(params)
+    return urlunsplit(parsed._replace(query=urlencode(query)))
+
+
+def _extract_gemini_text(response_json: Any) -> str:
+    """从 Gemini 响应对象或分块数组中提取首段文本."""
+    payloads = response_json if isinstance(response_json, list) else [response_json]
+
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+
+        candidates = payload.get("candidates", [])
+        if not isinstance(candidates, list) or not candidates:
+            continue
+
+        content = candidates[0].get("content", {})
+        if not isinstance(content, dict):
+            continue
+
+        parts = content.get("parts", [])
+        if not isinstance(parts, list) or not parts:
+            continue
+
+        text = parts[0].get("text", "")
+        if text:
+            return text
+
+    return ""
 
 
 class APIProvider(ABC):
@@ -24,8 +97,8 @@ class APIProvider(ABC):
         ...
 
     @abstractmethod
-    def get_request_url(self) -> str:
-        """返回请求 URL."""
+    def get_request_url(self, stream: bool = False) -> str:
+        """返回请求 URL，必要时根据流式模式调整."""
         ...
 
     @abstractmethod
@@ -60,7 +133,7 @@ class OpenAIProvider(APIProvider):
             "stream": stream,
         }
 
-    def get_request_url(self) -> str:
+    def get_request_url(self, stream: bool = False) -> str:
         return self.api_url
 
     def parse_token_count(self, response_json: Dict[str, Any]) -> int:
@@ -71,14 +144,10 @@ class OpenAIProvider(APIProvider):
         return count
 
     def parse_content(self, response_json: Dict[str, Any]) -> str:
-        return (
-            response_json.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
+        return response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
 
     def is_first_content_event(self, line: bytes) -> bool:
-        return bool(line and line.strip())
+        return _is_openai_first_content_event(line)
 
 
 class ClaudeProvider(APIProvider):
@@ -101,7 +170,7 @@ class ClaudeProvider(APIProvider):
             payload["stream"] = True
         return payload
 
-    def get_request_url(self) -> str:
+    def get_request_url(self, stream: bool = False) -> str:
         return self.api_url
 
     def parse_token_count(self, response_json: Dict[str, Any]) -> int:
@@ -126,7 +195,7 @@ class ClaudeProvider(APIProvider):
         return False
 
 
-class AzureOpenAIProvider(APIProvider):
+class AzureOpenAIProvider(OpenAIProvider):
     """Azure OpenAI API Provider."""
 
     def get_headers(self) -> Dict[str, str]:
@@ -141,25 +210,43 @@ class AzureOpenAIProvider(APIProvider):
             "stream": stream,
         }
 
-    def get_request_url(self) -> str:
-        return self.api_url
+
+class GeminiProvider(APIProvider):
+    """Google Gemini API Provider."""
+
+    def get_headers(self) -> Dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key,
+        }
+
+    def build_chat_payload(self, prompt: str, stream: bool) -> Dict[str, Any]:
+        return {
+            "contents": [{"parts": [{"text": prompt}]}],
+        }
+
+    def get_request_url(self, stream: bool = False) -> str:
+        url = self.api_url
+        if stream and ":streamGenerateContent" not in url:
+            url = url.replace(":generateContent", ":streamGenerateContent")
+
+        if stream:
+            return _append_query_params(url, {"alt": "sse"})
+
+        return url
 
     def parse_token_count(self, response_json: Dict[str, Any]) -> int:
-        count = response_json.get("usage", {}).get("completion_tokens", 0)
-        if count == 0:
-            content = self.parse_content(response_json)
-            count = len(content.split()) if content else 0
-        return count
+        count = response_json.get("usageMetadata", {}).get("candidatesTokenCount", 0)
+        return count if isinstance(count, int) else 0
 
     def parse_content(self, response_json: Dict[str, Any]) -> str:
-        return (
-            response_json.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
+        return _extract_gemini_text(response_json)
 
     def is_first_content_event(self, line: bytes) -> bool:
-        return bool(line and line.strip())
+        data = _parse_sse_json(line)
+        if data is None:
+            return False
+        return bool(_extract_gemini_text(data))
 
 
 # Provider 注册表
@@ -167,6 +254,7 @@ PROVIDERS = {
     "openai": OpenAIProvider,
     "claude": ClaudeProvider,
     "azure": AzureOpenAIProvider,
+    "gemini": GeminiProvider,
 }
 
 
@@ -175,7 +263,7 @@ def create_provider(api_type: str, api_url: str, api_key: str, model: str) -> AP
     工厂函数，根据 api_type 创建对应的 Provider.
 
     Args:
-        api_type: API 类型 ("openai", "claude", "azure")
+        api_type: API 类型 ("openai", "claude", "azure", "gemini")
         api_url: API 端点 URL
         api_key: API 密钥
         model: 模型名称
