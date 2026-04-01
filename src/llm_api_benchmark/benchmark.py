@@ -2,18 +2,22 @@
 
 import math
 import time
-import json
 import statistics
 from datetime import datetime
+from typing import Any
 import requests
 
 from .providers import create_provider
 
 
+class BenchmarkRunError(RuntimeError):
+    """基准测试在所有运行都失败时抛出的异常."""
+
+
 class LLMAPIBenchmark:
     """大语言模型API性能测试类."""
 
-    def __init__(self, api_url, api_key, model, api_type="openai"):
+    def __init__(self, api_url, api_key, model, api_type="openai", timeout=None):
         """
         初始化API基准测试对象.
 
@@ -21,13 +25,64 @@ class LLMAPIBenchmark:
             api_url: API端点URL
             api_key: API密钥
             model: 要测试的模型名称
-            api_type: API类型 ("openai", "claude", "azure")
+            api_type: API类型 ("openai", "claude", "azure", "gemini")
+            timeout: requests timeout 配置，None 表示使用 requests 默认行为
         """
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
         self.api_type = api_type
+        self.timeout = self._normalize_timeout(timeout)
         self.provider = create_provider(api_type, api_url, api_key, model)
+
+    @staticmethod
+    def _normalize_timeout(timeout: Any):
+        """标准化 timeout 配置."""
+        if timeout is None:
+            return None
+
+        if isinstance(timeout, (int, float)):
+            if timeout <= 0:
+                raise ValueError("timeout 必须大于 0")
+            return float(timeout)
+
+        if isinstance(timeout, (list, tuple)) and len(timeout) == 2:
+            connect_timeout, read_timeout = timeout
+            if connect_timeout <= 0 or read_timeout <= 0:
+                raise ValueError("timeout 的两个值都必须大于 0")
+            return float(connect_timeout), float(read_timeout)
+
+        raise ValueError("timeout 必须为正数，或包含两个正数的列表/元组")
+
+    @staticmethod
+    def _format_request_error(exc: requests.RequestException) -> str:
+        """返回不包含敏感 URL 的错误摘要."""
+        if isinstance(exc, requests.Timeout):
+            return "请求超时"
+
+        if isinstance(exc, requests.HTTPError):
+            response = exc.response
+            if response is not None:
+                reason = f" {response.reason}" if response.reason else ""
+                return f"HTTP {response.status_code}{reason}"
+            return "HTTP 错误"
+
+        if isinstance(exc, requests.ConnectionError):
+            return "连接失败"
+
+        return exc.__class__.__name__
+
+    @staticmethod
+    def _raise_if_no_success(metric_name, values, failures, total_runs):
+        """当所有运行都失败时抛出明确异常."""
+        if values:
+            return
+
+        unique_failures = list(dict.fromkeys(failures)) or ["未产生可用结果"]
+        reasons = "；".join(unique_failures[:3])
+        raise BenchmarkRunError(
+            f"{metric_name}测试失败：{total_runs} 次运行均未成功。原因：{reasons}"
+        )
 
     @staticmethod
     def _compute_stats(data):
@@ -41,8 +96,16 @@ class LLMAPIBenchmark:
             dict: 包含 avg, min, max, median, p90, p99, std_dev, raw
         """
         if not data:
-            return {"avg": 0, "min": 0, "max": 0, "median": 0,
-                    "p90": 0, "p99": 0, "std_dev": 0, "raw": []}
+            return {
+                "avg": 0,
+                "min": 0,
+                "max": 0,
+                "median": 0,
+                "p90": 0,
+                "p99": 0,
+                "std_dev": 0,
+                "raw": [],
+            }
 
         sorted_data = sorted(data)
         n = len(sorted_data)
@@ -81,30 +144,50 @@ class LLMAPIBenchmark:
             dict: 包含统计指标的字典
         """
         latencies = []
+        failures = []
 
         for i in range(num_runs):
             payload = self.provider.build_chat_payload(prompt, stream=True)
+            response = None
+            latency = None
+            failed = False
+            try:
+                start_time = time.time()
+                response = requests.post(
+                    self.provider.get_request_url(stream=True),
+                    headers=self.provider.get_headers(),
+                    json=payload,
+                    stream=True,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
 
-            start_time = time.time()
-            response = requests.post(
-                self.provider.get_request_url(),
-                headers=self.provider.get_headers(),
-                json=payload,
-                stream=True,
-            )
+                # 读取第一个内容数据包
+                for line in response.iter_lines():
+                    if self.provider.is_first_content_event(line):
+                        first_token_time = time.time()
+                        latency = first_token_time - start_time
+                        latencies.append(latency)
+                        break
+            except requests.RequestException as exc:
+                error_message = self._format_request_error(exc)
+                failures.append(error_message)
+                print(f"运行 {i+1}/{num_runs}: 请求失败 ({error_message})，已跳过")
+                failed = True
+            finally:
+                if response is not None:
+                    response.close()
 
-            # 读取第一个数据包
-            for line in response.iter_lines():
-                if self.provider.is_first_content_event(line):
-                    first_token_time = time.time()
-                    latency = first_token_time - start_time
-                    latencies.append(latency)
-                    break
+            if not failed and latency is None:
+                failures.append("未检测到首个 token")
+                print(f"运行 {i+1}/{num_runs}: 未检测到首个 token，跳过本轮")
+            elif latency is not None:
+                print(f"运行 {i+1}/{num_runs}: 首字延迟 = {latency:.3f}秒")
 
-            response.close()
-            print(f"运行 {i+1}/{num_runs}: 首字延迟 = {latency:.3f}秒")
-            time.sleep(1)  # 避免请求过于频繁
+            if i < num_runs - 1:
+                time.sleep(1)  # 避免请求过于频繁
 
+        self._raise_if_no_success("首字延迟", latencies, failures, num_runs)
         stats = self._compute_stats(latencies)
         print(f"\n平均首字延迟: {stats['avg']:.3f}秒")
         return stats
@@ -122,32 +205,50 @@ class LLMAPIBenchmark:
         """
         throughputs = []
         total_times = []
+        failures = []
 
         for i in range(runs):
             payload = self.provider.build_chat_payload(prompt, stream=False)
+            response = None
+            try:
+                start_time = time.time()
+                response = requests.post(
+                    self.provider.get_request_url(stream=False),
+                    headers=self.provider.get_headers(),
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                end_time = time.time()
 
-            start_time = time.time()
-            response = requests.post(
-                self.provider.get_request_url(),
-                headers=self.provider.get_headers(),
-                json=payload,
-            )
-            end_time = time.time()
+                elapsed = end_time - start_time
+                response_json = response.json()
 
-            elapsed = end_time - start_time
-            total_times.append(elapsed)
-            response_json = response.json()
+                output_tokens = self.provider.parse_token_count(response_json)
 
-            output_tokens = self.provider.parse_token_count(response_json)
+                if elapsed > 0 and output_tokens > 0:
+                    throughput = output_tokens / elapsed
+                    throughputs.append(throughput)
+                    total_times.append(elapsed)
+                    print(
+                        f"运行 {i+1}/{runs}: 吞吐量 = {throughput:.2f} tokens/秒 "
+                        f"(生成了 {output_tokens} tokens，用时 {elapsed:.2f}秒)"
+                    )
+                else:
+                    failures.append("未能解析输出 token 数")
+                    print(f"运行 {i+1}/{runs}: 未能解析输出 token 数，跳过本轮")
+            except requests.RequestException as exc:
+                error_message = self._format_request_error(exc)
+                failures.append(error_message)
+                print(f"运行 {i+1}/{runs}: 请求失败 ({error_message})，已跳过")
+            finally:
+                if response is not None:
+                    response.close()
 
-            if elapsed > 0 and output_tokens > 0:
-                throughput = output_tokens / elapsed
-                throughputs.append(throughput)
-                print(f"运行 {i+1}/{runs}: 吞吐量 = {throughput:.2f} tokens/秒 "
-                      f"(生成了 {output_tokens} tokens，用时 {elapsed:.2f}秒)")
+            if i < runs - 1:
+                time.sleep(1)  # 避免请求过于频繁
 
-            time.sleep(1)  # 避免请求过于频繁
-
+        self._raise_if_no_success("吞吐量", throughputs, failures, runs)
         throughput_stats = self._compute_stats(throughputs)
         total_time_stats = self._compute_stats(total_times)
 
@@ -199,11 +300,17 @@ class LLMAPIBenchmark:
 
         print("\n===== 基准测试结果摘要 =====")
         print(f"模型: {self.model}")
-        print(f"首字延迟: {latency_stats['avg']:.3f}秒 "
-              f"(min={latency_stats['min']:.3f}, p90={latency_stats['p90']:.3f})")
-        print(f"吞吐量: {throughput_stats['avg']:.2f} tokens/秒 "
-              f"(min={throughput_stats['min']:.2f}, p90={throughput_stats['p90']:.2f})")
-        print(f"总响应时间: {total_time_stats['avg']:.2f}秒 "
-              f"(min={total_time_stats['min']:.2f}, max={total_time_stats['max']:.2f})")
+        print(
+            f"首字延迟: {latency_stats['avg']:.3f}秒 "
+            f"(min={latency_stats['min']:.3f}, p90={latency_stats['p90']:.3f})"
+        )
+        print(
+            f"吞吐量: {throughput_stats['avg']:.2f} tokens/秒 "
+            f"(min={throughput_stats['min']:.2f}, p90={throughput_stats['p90']:.2f})"
+        )
+        print(
+            f"总响应时间: {total_time_stats['avg']:.2f}秒 "
+            f"(min={total_time_stats['min']:.2f}, max={total_time_stats['max']:.2f})"
+        )
 
         return results

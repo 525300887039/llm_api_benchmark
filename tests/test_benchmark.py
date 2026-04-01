@@ -2,10 +2,10 @@
 
 import unittest
 from unittest.mock import patch, MagicMock
-import json
 from datetime import datetime
+import requests
 
-from llm_api_benchmark.benchmark import LLMAPIBenchmark
+from llm_api_benchmark.benchmark import BenchmarkRunError, LLMAPIBenchmark
 
 
 class TestLLMAPIBenchmark(unittest.TestCase):
@@ -19,115 +19,316 @@ class TestLLMAPIBenchmark(unittest.TestCase):
         self.benchmark = LLMAPIBenchmark(self.api_url, self.api_key, self.model)
         self.test_prompt = "这是一个测试提示词"
 
-    @patch('llm_api_benchmark.benchmark.requests.post')
+    @patch("llm_api_benchmark.benchmark.requests.post")
     def test_measure_first_token_latency(self, mock_post):
         """测试首字延迟测量功能."""
         # 模拟响应
         mock_response = MagicMock()
-        mock_response.iter_lines.return_value = [b'data: {"id":"test"}']
+        mock_response.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+        ]
         mock_post.return_value = mock_response
 
         # 运行测试
-        with patch('llm_api_benchmark.benchmark.time.time') as mock_time:
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+        ):
             mock_time.side_effect = [0, 0.5]  # 模拟起始时间和第一个token时间
             stats = self.benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
 
         # 验证结果（现在返回 stats dict）
-        self.assertEqual(stats['avg'], 0.5)
-        self.assertEqual(stats['raw'], [0.5])
+        self.assertEqual(stats["avg"], 0.5)
+        self.assertEqual(stats["raw"], [0.5])
         mock_post.assert_called_once()
-        self.assertEqual(mock_post.call_args[1]['json']['model'], self.model)
-        self.assertEqual(mock_post.call_args[1]['json']['messages'][0]['content'], self.test_prompt)
+        mock_response.close.assert_called_once()
+        mock_response.raise_for_status.assert_called_once()
+        self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
+        self.assertEqual(mock_post.call_args[1]["json"]["model"], self.model)
+        self.assertEqual(mock_post.call_args[1]["json"]["messages"][0]["content"], self.test_prompt)
 
-    @patch('llm_api_benchmark.benchmark.requests.post')
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_first_token_latency_without_content_event(self, mock_post):
+        """测试流式响应没有内容token时会显式失败."""
+        mock_response = MagicMock()
+        mock_response.iter_lines.return_value = [
+            b": keep-alive",
+            b'data: {"choices":[{"delta":{}}]}',
+            b"data: [DONE]",
+        ]
+        mock_post.return_value = mock_response
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time", return_value=0),
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+        ):
+            with self.assertRaises(BenchmarkRunError) as ctx:
+                self.benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
+
+        self.assertIn("未检测到首个 token", str(ctx.exception))
+        mock_post.assert_called_once()
+        mock_response.close.assert_called_once()
+        mock_response.raise_for_status.assert_called_once()
+        self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_first_token_latency_with_empty_stream(self, mock_post):
+        """测试空流式响应时会显式失败."""
+        mock_response = MagicMock()
+        mock_response.iter_lines.return_value = []
+        mock_post.return_value = mock_response
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time", return_value=0),
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+            patch("builtins.print") as mock_print,
+        ):
+            with self.assertRaises(BenchmarkRunError):
+                self.benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
+
+        mock_post.assert_called_once()
+        mock_response.close.assert_called_once()
+        mock_response.raise_for_status.assert_called_once()
+        self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
+        mock_print.assert_any_call("运行 1/1: 未检测到首个 token，跳过本轮")
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_first_token_latency_timeout(self, mock_post):
+        """测试请求超时时若全部失败会抛出异常."""
+        mock_post.side_effect = requests.Timeout("timed out")
+
+        with patch("llm_api_benchmark.benchmark.time.sleep"):
+            with self.assertRaises(BenchmarkRunError) as ctx:
+                self.benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
+
+        self.assertIn("请求超时", str(ctx.exception))
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_first_token_latency_http_error(self, mock_post):
+        """测试HTTP错误信息会脱敏且最终抛出基准测试异常."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.reason = "Internal Server Error"
+        mock_response.raise_for_status.side_effect = requests.HTTPError(
+            "500 Server Error: https://example.com?key=secret",
+            response=mock_response,
+        )
+        mock_post.return_value = mock_response
+
+        with patch("llm_api_benchmark.benchmark.time.sleep"):
+            with self.assertRaises(BenchmarkRunError) as ctx:
+                self.benchmark.measure_first_token_latency(self.test_prompt, num_runs=1)
+
+        self.assertIn("HTTP 500 Internal Server Error", str(ctx.exception))
+        self.assertNotIn("secret", str(ctx.exception))
+        self.assertNotIn("https://example.com", str(ctx.exception))
+        mock_post.assert_called_once()
+        mock_response.raise_for_status.assert_called_once()
+        mock_response.close.assert_called_once()
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
     def test_measure_token_throughput(self, mock_post):
         """测试token吞吐量测量功能."""
         # 模拟响应
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "usage": {"completion_tokens": 100},
-            "choices": [{"message": {"content": "测试回复" * 20}}]
+            "choices": [{"message": {"content": "测试回复" * 20}}],
         }
         mock_post.return_value = mock_response
 
         # 运行测试
-        with patch('llm_api_benchmark.benchmark.time.time') as mock_time:
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+        ):
             mock_time.side_effect = [0, 2.0]  # 模拟起始时间和结束时间（2秒）
             throughput_stats, total_time_stats = self.benchmark.measure_token_throughput(
                 self.test_prompt, runs=1
             )
 
         # 验证结果 (100 tokens / 2秒 = 50 tokens/秒)
-        self.assertEqual(throughput_stats['avg'], 50.0)
-        self.assertEqual(throughput_stats['raw'], [50.0])
-        self.assertEqual(total_time_stats['avg'], 2.0)
+        self.assertEqual(throughput_stats["avg"], 50.0)
+        self.assertEqual(throughput_stats["raw"], [50.0])
+        self.assertEqual(total_time_stats["avg"], 2.0)
         mock_post.assert_called_once()
-        self.assertEqual(mock_post.call_args[1]['json']['messages'][0]['content'], self.test_prompt)
+        mock_response.raise_for_status.assert_called_once()
+        mock_response.close.assert_called_once()
+        self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
+        self.assertEqual(mock_post.call_args[1]["json"]["messages"][0]["content"], self.test_prompt)
 
-    @patch('llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_first_token_latency')
-    @patch('llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_token_throughput')
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_token_throughput_timeout(self, mock_post):
+        """测试吞吐量请求超时时若全部失败会抛出异常."""
+        mock_post.side_effect = requests.Timeout("timed out")
+
+        with patch("llm_api_benchmark.benchmark.time.sleep"):
+            with self.assertRaises(BenchmarkRunError) as ctx:
+                self.benchmark.measure_token_throughput(self.test_prompt, runs=1)
+
+        self.assertIn("请求超时", str(ctx.exception))
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args[1]["timeout"], self.benchmark.timeout)
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_token_throughput_http_error(self, mock_post):
+        """测试HTTP 500时吞吐量测量会显式失败."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.reason = "Internal Server Error"
+        mock_response.raise_for_status.side_effect = requests.HTTPError(
+            "500 Server Error: https://example.com?key=secret",
+            response=mock_response,
+        )
+        mock_post.return_value = mock_response
+
+        with patch("llm_api_benchmark.benchmark.time.sleep"):
+            with self.assertRaises(BenchmarkRunError) as ctx:
+                self.benchmark.measure_token_throughput(self.test_prompt, runs=1)
+
+        self.assertIn("HTTP 500 Internal Server Error", str(ctx.exception))
+        self.assertNotIn("secret", str(ctx.exception))
+        mock_post.assert_called_once()
+        mock_response.raise_for_status.assert_called_once()
+        mock_response.close.assert_called_once()
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_token_throughput_without_output_tokens_raises(self, mock_post):
+        """测试无法解析 token 数时不会伪造 0 吞吐量成功."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"usage": {}, "choices": [{"message": {"content": ""}}]}
+        mock_post.return_value = mock_response
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+        ):
+            mock_time.side_effect = [0, 2.0]
+            with self.assertRaises(BenchmarkRunError) as ctx:
+                self.benchmark.measure_token_throughput(self.test_prompt, runs=1)
+
+        self.assertIn("未能解析输出 token 数", str(ctx.exception))
+        mock_response.close.assert_called_once()
+
+    @patch("llm_api_benchmark.benchmark.requests.post")
+    def test_measure_first_token_latency_allows_partial_success(self, mock_post):
+        """测试存在成功运行时不会因单次失败而整体失败."""
+        success_response = MagicMock()
+        success_response.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+        ]
+        failure = requests.Timeout("timed out")
+        mock_post.side_effect = [success_response, failure]
+
+        with (
+            patch("llm_api_benchmark.benchmark.time.time") as mock_time,
+            patch("llm_api_benchmark.benchmark.time.sleep"),
+        ):
+            mock_time.side_effect = [0, 0.5, 1.0]
+            stats = self.benchmark.measure_first_token_latency(self.test_prompt, num_runs=2)
+
+        self.assertEqual(stats["avg"], 0.5)
+        self.assertEqual(stats["raw"], [0.5])
+        success_response.close.assert_called_once()
+
+    @patch("llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_first_token_latency")
+    @patch("llm_api_benchmark.benchmark.LLMAPIBenchmark.measure_token_throughput")
     def test_run_comprehensive_benchmark(self, mock_throughput, mock_latency):
         """测试综合基准测试功能."""
         # 模拟方法返回值（新格式：stats dict 和 tuple）
         mock_latency.return_value = {
-            "avg": 0.5, "min": 0.5, "max": 0.5, "median": 0.5,
-            "p90": 0.5, "p99": 0.5, "std_dev": 0, "raw": [0.5],
+            "avg": 0.5,
+            "min": 0.5,
+            "max": 0.5,
+            "median": 0.5,
+            "p90": 0.5,
+            "p99": 0.5,
+            "std_dev": 0,
+            "raw": [0.5],
         }
         throughput_stats = {
-            "avg": 50.0, "min": 50.0, "max": 50.0, "median": 50.0,
-            "p90": 50.0, "p99": 50.0, "std_dev": 0, "raw": [50.0],
+            "avg": 50.0,
+            "min": 50.0,
+            "max": 50.0,
+            "median": 50.0,
+            "p90": 50.0,
+            "p99": 50.0,
+            "std_dev": 0,
+            "raw": [50.0],
         }
         total_time_stats = {
-            "avg": 2.0, "min": 2.0, "max": 2.0, "median": 2.0,
-            "p90": 2.0, "p99": 2.0, "std_dev": 0, "raw": [2.0],
+            "avg": 2.0,
+            "min": 2.0,
+            "max": 2.0,
+            "median": 2.0,
+            "p90": 2.0,
+            "p99": 2.0,
+            "std_dev": 0,
+            "raw": [2.0],
         }
         mock_throughput.return_value = (throughput_stats, total_time_stats)
 
         # 运行测试
-        with patch('llm_api_benchmark.benchmark.datetime') as mock_datetime:
+        with patch("llm_api_benchmark.benchmark.datetime") as mock_datetime:
             mock_datetime.now.return_value = datetime(2023, 1, 1, 12, 0, 0)
             results = self.benchmark.run_comprehensive_benchmark(self.test_prompt, runs=2)
 
         # 验证结果（向后兼容的顶层字段）
-        self.assertEqual(results['model'], self.model)
-        self.assertEqual(results['api_url'], self.api_url)
-        self.assertEqual(results['first_token_latency'], 0.5)
-        self.assertEqual(results['token_throughput'], 50.0)
-        self.assertEqual(results['total_time'], 2.0)
-        self.assertEqual(results['prompt_length'], len(self.test_prompt))
-        self.assertEqual(results['runs'], 2)
+        self.assertEqual(results["model"], self.model)
+        self.assertEqual(results["api_url"], self.api_url)
+        self.assertEqual(results["first_token_latency"], 0.5)
+        self.assertEqual(results["token_throughput"], 50.0)
+        self.assertEqual(results["total_time"], 2.0)
+        self.assertEqual(results["prompt_length"], len(self.test_prompt))
+        self.assertEqual(results["runs"], 2)
         # 验证详细统计字段存在
-        self.assertIn('first_token_latency_stats', results)
-        self.assertIn('token_throughput_stats', results)
-        self.assertIn('total_time_stats', results)
+        self.assertIn("first_token_latency_stats", results)
+        self.assertIn("token_throughput_stats", results)
+        self.assertIn("total_time_stats", results)
 
     def test_compute_stats(self):
         """测试统计计算功能."""
         data = [1.0, 2.0, 3.0, 4.0, 5.0]
         stats = LLMAPIBenchmark._compute_stats(data)
 
-        self.assertAlmostEqual(stats['avg'], 3.0)
-        self.assertEqual(stats['min'], 1.0)
-        self.assertEqual(stats['max'], 5.0)
-        self.assertAlmostEqual(stats['median'], 3.0)
-        self.assertEqual(stats['raw'], [1.0, 2.0, 3.0, 4.0, 5.0])
-        self.assertGreater(stats['p90'], stats['median'])
-        self.assertGreater(stats['std_dev'], 0)
+        self.assertAlmostEqual(stats["avg"], 3.0)
+        self.assertEqual(stats["min"], 1.0)
+        self.assertEqual(stats["max"], 5.0)
+        self.assertAlmostEqual(stats["median"], 3.0)
+        self.assertEqual(stats["raw"], [1.0, 2.0, 3.0, 4.0, 5.0])
+        self.assertGreater(stats["p90"], stats["median"])
+        self.assertGreater(stats["std_dev"], 0)
 
     def test_compute_stats_empty(self):
         """测试空数据的统计计算."""
         stats = LLMAPIBenchmark._compute_stats([])
-        self.assertEqual(stats['avg'], 0)
-        self.assertEqual(stats['raw'], [])
+        self.assertEqual(stats["avg"], 0)
+        self.assertEqual(stats["raw"], [])
 
     def test_compute_stats_single(self):
         """测试单个数据点的统计计算."""
         stats = LLMAPIBenchmark._compute_stats([42.0])
-        self.assertEqual(stats['avg'], 42.0)
-        self.assertEqual(stats['min'], 42.0)
-        self.assertEqual(stats['max'], 42.0)
-        self.assertEqual(stats['std_dev'], 0)
+        self.assertEqual(stats["avg"], 42.0)
+        self.assertEqual(stats["min"], 42.0)
+        self.assertEqual(stats["max"], 42.0)
+        self.assertEqual(stats["std_dev"], 0)
+
+    def test_init_uses_no_timeout_by_default(self):
+        """测试默认不强制设置请求超时."""
+        self.assertIsNone(self.benchmark.timeout)
+
+    def test_init_accepts_scalar_timeout(self):
+        """测试可以配置单值 timeout."""
+        benchmark = LLMAPIBenchmark(self.api_url, self.api_key, self.model, timeout=30)
+        self.assertEqual(benchmark.timeout, 30.0)
+
+    def test_init_accepts_timeout_pair(self):
+        """测试可以配置 connect/read timeout 对."""
+        benchmark = LLMAPIBenchmark(self.api_url, self.api_key, self.model, timeout=[10, 120])
+        self.assertEqual(benchmark.timeout, (10.0, 120.0))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
